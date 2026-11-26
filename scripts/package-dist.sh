@@ -21,9 +21,9 @@ cp "$ROOT_DIR/README.ko.md" "$STAGE/TailIME-${VERSION}/README.ko.md"
 cp "$ROOT_DIR/LICENSE" "$STAGE/TailIME-${VERSION}/LICENSE"
 chmod 755 "$STAGE/TailIME-${VERSION}/install.sh"
 
-rm -f "$ZIP_PATH"
+rm -f "$ZIP_PATH" "$ZIP_PATH.sha256"
 ditto -c -k --keepParent --norsrc "$STAGE/TailIME-${VERSION}" "$ZIP_PATH"
-shasum -a 256 "$ZIP_PATH" > "$ZIP_PATH.sha256"
+(cd "$OUT_DIR" && shasum -a 256 "$(basename "$ZIP_PATH")") > "$ZIP_PATH.sha256"
 
 echo "✓ Distribution archive ready:"
 echo "  $ZIP_PATH"

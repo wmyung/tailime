@@ -143,7 +143,9 @@ tailime-ctl peers                           # Tailscale peers & TailIME daemon r
 tailime-ctl remote-set 100.64.0.10 ko       # Deterministic remote Mac switch over Tailscale
 tailime-ctl pair-export                     # Print your TKP1 pairing token
 echo "TKP1:..." | tailime-ctl pair-import   # Register peer token via stdin (kept out of argv)
-tailime-ctl pause | resume | quit
+tailime-ctl pause                           # Temporarily pause interception
+tailime-ctl resume                          # Resume interception
+tailime-ctl quit                            # Quit TailIME cleanly
 ```
 
 ---

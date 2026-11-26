@@ -101,7 +101,7 @@ runTest("Authenticated TIV1 packet round-trip, tamper rejection, and clock skew"
     let msg = WireMessage(
         cmd: .set,
         senderDeviceID: macA.deviceID,
-        senderName: "MacBook Air",
+        senderName: "mac-laptop",
         bootSessionID: "boot-1",
         seq: 42,
         targetLanguage: .korean
@@ -147,7 +147,7 @@ runTest("Unauthenticated commands rejected except valid pairHello") {
     let hello = WireMessage(
         cmd: .pairHello,
         senderDeviceID: macA.deviceID,
-        senderName: "mac-pro-1",
+        senderName: "mac-desk",
         bootSessionID: "b1",
         seq: 1,
         publicKeyBase64: macA.publicKeyBase64
@@ -576,7 +576,7 @@ runTest("CSystemBridge live helpers, proc_listallpids lookup & real loopback UDP
     let msg = WireMessage(
         cmd: .set,
         senderDeviceID: macA.deviceID,
-        senderName: "MacBook Air",
+        senderName: "mac-laptop",
         bootSessionID: "test-boot",
         seq: 7,
         targetLanguage: .korean
