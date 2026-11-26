@@ -179,11 +179,17 @@ tailime-ctl quit                            # Quit TailIME cleanly
 - For macOS native **`Caps Lock (한/A)`**, confirm *System Settings → Keyboard → Input Sources → Use the Caps Lock key to switch to and from ABC* is enabled and not overridden by Karabiner.
 - **Secure Input active:** When a password field (`sudo` in Terminal, 1Password, login prompt) enables macOS Secure Input, macOS blocks all event taps by design. TailIME displays the blocking app in the menu bar and **Diagnostics** tab — close that prompt to resume automatically.
 
-### 4. Accessibility toggle is ON after updating/rebuilding, yet keys stop working
-- Ad-hoc signed macOS builds change their code signature hash on rebuild, causing macOS TCC to hold a stale grant. Open **System Settings → Privacy & Security → Accessibility**, select `TailIME`, click **`-`** to remove it, then click **`+`** to re-add `/Applications/TailIME.app`.
-- If you rebuild frequently from source, run `./scripts/setup-local-cert.sh` once and build with `CODESIGN_IDENTITY="TailIME Local Signing" ./scripts/package-dist.sh` so permissions persist across rebuilds.
+### 4. Pairing drops or Accessibility stops working after updating / rebuilding
+- **Keychain prompt on ad-hoc upgrade:** Because ad-hoc builds (`codesign --sign -`) change their code signature hash on update, macOS Keychain prompts to allow access to the stored `com.tailime.app.identity` key. Click **Always Allow**. If that prompt is cancelled or denied, TailIME cannot read the existing key and creates a new Curve25519 key (or falls back to an in-memory ephemeral key if Keychain save also fails, which resets on restart) — resulting in a key mismatch where packets between the two Macs fail HMAC verification (`daemonReachable: false`). To recover, allow Keychain access, click **신뢰 기기 초기화** on both Macs under **Settings → 원격 Tailscale** *(note: this clears the entire trusted-peer list, so any other paired Macs will also need to be re-paired)*, and re-exchange pairing tokens or re-pair via 6-digit SAS.
+- **Accessibility TCC cache:** Even if the toggle appears ON after replacing an ad-hoc build, macOS TCC may keep the old signature hash. Open **System Settings → Privacy & Security → Accessibility**, select `TailIME`, click **`-`** to remove it, then click **`+`** to re-add `/Applications/TailIME.app`.
+- **Reducing permission resets across rebuilds:** Run `./scripts/setup-local-cert.sh` once and build with `CODESIGN_IDENTITY="TailIME Local Signing" ./scripts/package-dist.sh`. Signing with a persistent local certificate helps preserve Keychain ACL and Accessibility grants across future updates once granted to the signed build.
 
-### 5. Fast 10-Second Diagnostic Checklist
+### 5. Korean characters split into uncomposed Jamo (`ㄹㅣㄷㅡㅁㅣㅇㅔ`) on the remote Mac
+- **macOS `KoreanIM` (`KIM_Extension`) focus mismatch (seen in Electron / Chromium apps):** macOS 2-Set Korean combines a keyboard layout (`2SetHangul`) with the `KoreanIM` composition server (`KIM_Extension`). If a floating window on the remote Mac (such as RustDesk's incoming connection bar `RustDesk --cm`) briefly takes key focus during a language switch, `TextInputSwitcher` can hit a `target app and typing focus mismatch` — leaving the target Electron/Chromium app (VS Code, Antigravity, Slack, Chrome) on raw `2SetHangul` without `KIM_Extension` attached.
+  - **Quick recovery:** Try pressing `Cmd+Tab` away and back (or clicking another window and back into the text box), or toggling Korean/English once to re-attach `KIM_Extension`. Minimizing RustDesk's floating incoming-connection window (`--cm`) on the remote Mac can also help reduce focus conflicts.
+- **RustDesk keyboard mode:** In **Translate mode**, RustDesk may inject characters via `CGEventKeyboardSetUnicodeString`, which can bypass macOS `KoreanIM` syllable composition. Switch RustDesk's toolbar keyboard icon to **Map mode** (and if needed, try toggling macOS **Input Source 1 / 2** in the same menu) while keeping TailIME's **Auto-English (ABC) lock on remote focus** enabled.
+
+### 6. Fast 10-Second Diagnostic Checklist
 ```bash
 tailime-ctl status   # Verify accessibility, hidTap, sessionTap, triggers, conflictingApps, remoteFocused
 tailime-ctl peers    # Verify Tailscale peer online, direct path, and daemonReachable

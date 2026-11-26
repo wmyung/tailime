@@ -118,11 +118,17 @@ echo "TKP1:..." | tailime-ctl pair-import
 - macOS 기본 **`Caps Lock(한/A)`** 사용 시: *시스템 설정 → 키보드 → 입력 소스 → 'Caps Lock 키를 사용하여 ABC 입력 소스로 전환'*이 켜져 있는지, Karabiner에서 `caps_lock`을 다른 키로 덮어쓰지 않았는지 확인하세요.
 - **암호 입력 보호(Secure Input):** 터미널 `sudo`, 1Password, 잠금 화면 등 암호 입력창이 열려 있으면 macOS 보안 정책상 모든 이벤트 탭이 일시 차단됩니다. 메뉴바와 **진단** 탭에 표시되는 앱의 암호 입력창을 닫으면 즉시 복구됩니다.
 
-### 4. 업데이트·재빌드 후 손쉬운 사용 토글은 켜져 있는데 동작하지 않을 때
-- Ad-hoc 서명 앱은 바이너리가 교체되면 macOS TCC가 이전 서명을 기억해 권한이 무효화될 수 있습니다. **[시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용]**에서 `TailIME`을 선택해 **`-` 버튼으로 제거한 뒤 `+`로 `/Applications/TailIME.app`을 다시 추가**하세요.
-- 소스에서 자주 재빌드한다면 `./scripts/setup-local-cert.sh`로 로컬 인증서를 1회 생성해 서명하면 권한이 유지됩니다.
+### 4. 업데이트·재빌드 후 페어링이 끊기거나 손쉬운 사용 권한이 먹지 않을 때
+- **업데이트 시 키체인 확인 창:** Ad-hoc 서명(`codesign --sign -`) 앱은 업데이트할 때마다 바이너리 해시가 바뀌어 macOS 키체인(`com.tailime.app.identity`) 접근 확인 창이 뜹니다. 반드시 **「항상 허용」**을 눌러 주세요. 이 창을 취소·거부하면 기존 기기 키를 읽지 못해 새 Curve25519 키가 생성되며(키체인 저장까지 실패하면 재시작 시 초기화되는 메모리 임시 키로 대체됨), 양쪽 Mac의 키가 어긋나 HMAC 검증에서 패킷이 거부됩니다(`daemonReachable: false`). 복구하려면 키체인 접근을 허용한 뒤 양쪽 Mac의 **설정 → 원격 Tailscale → 신뢰 기기 초기화**를 누르고 *(주의: 신뢰된 원격 Mac 목록 전체가 초기화되므로 다른 페어링 기기도 다시 등록해야 함)* 토큰을 다시 교환하거나 6자리 SAS로 재페어링하세요.
+- **손쉬운 사용(TCC) 재등록:** 토글이 켜져 있어도 구버전 서명이 캐시되어 이벤트 탭이 동작하지 않을 수 있습니다. **[시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용]**에서 `TailIME`을 **`-`로 제거한 뒤 `+`로 `/Applications/TailIME.app`을 다시 추가**하세요.
+- **재빌드 시 권한 초기화 줄이기:** `./scripts/setup-local-cert.sh`로 로컬 서명 인증서를 한 번 생성해 `CODESIGN_IDENTITY="TailIME Local Signing" ./scripts/package-dist.sh`로 빌드하면, 서명된 빌드에 한 번 권한을 부여한 뒤 이후 업데이트에서도 **키체인 접근 권한**과 **손쉬운 사용 권한**을 유지하는 데 도움이 됩니다.
 
-### 5. 10초 빠른 진단
+### 5. 원격 Mac(특히 Electron 앱 · RustDesk)에서 한글 자소가 분리되어(`ㄹㅣㄷㅡㅁㅣㅇㅔ`) 입력될 때
+- **macOS `KoreanIM(KIM_Extension)` 포커스 불일치 (Electron / Chromium 앱에서 발생):** macOS 2벌식 한글은 자판 레이아웃(`2SetHangul`)과 조합 서버(`KIM_Extension`) 두 계층으로 동작합니다. 한영 전환 시점에 원격 Mac의 RustDesk 연결 상태 플로팅 창(`RustDesk --cm`) 등이 잠깐 키 포커스를 가져가면 `TextInputSwitcher`에서 `target app and typing focus mismatch`가 발생할 수 있고, 대상 Electron/Chromium 앱(VS Code, Antigravity, Slack, Chrome 등)에 `KIM_Extension`이 붙지 않아 자모가 조합 없이(`ㄹㅣㄷㅡㅁㅣㅇㅔ`) 그대로 입력됩니다.
+  - **빠른 복구:** 원격 Mac에서 `Cmd+Tab`으로 다른 앱에 갔다가 돌아오거나, 다른 창을 한 번 클릭한 뒤 입력창을 다시 클릭하거나, 한영키를 한 번 껐다 켜서 `KIM_Extension` 재연결을 시도해 볼 수 있습니다. 원격 Mac에 떠 있는 RustDesk 연결 상태 창(`--cm`)을 최소화해 두는 것도 포커스 충돌을 줄이는 데 도움이 됩니다.
+- **RustDesk 키보드 모드 확인:** RustDesk가 **Translate mode**로 동작하면 `CGEventKeyboardSetUnicodeString`으로 문자를 직접 주입해 macOS `KoreanIM` 조합기를 우회할 수 있습니다. RustDesk 툴바의 키보드 아이콘에서 **Map mode**를 선택(필요 시 같은 메뉴에서 macOS용 **Input Source 1 / 2** 전환)하고, TailIME의 **원격 창 포커스 시 로컬 자동 영문(ABC) 고정**을 켜 두세요.
+
+### 6. 10초 빠른 진단
 ```bash
 tailime-ctl status   # 권한, 이벤트 탭, 감지된 트리거, 충돌 앱(conflictingApps), 원격 인식 상태 확인
 tailime-ctl peers    # Tailscale 온라인/Direct 경로 및 상대 TailIME 응답(daemonReachable) 확인
