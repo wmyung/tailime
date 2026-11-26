@@ -1,0 +1,11 @@
+.build/
+dist/
+.DS_Store
+*.swp
+*.swo
+*.pem
+*.p12
+*.key
+*.mobileprovision
+.swiftpm/xcode/
+xcuserdata/

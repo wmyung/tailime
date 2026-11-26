@@ -1,0 +1,118 @@
+# TailIME
+
+**로컬 Mac에서는 딜레이·씹힘 없이 빠릿하게, Tailscale로 연결된 원격 Mac에서는 Karabiner·원격 앱 모드와 무관하게 정확하게 한영을 전환하는 macOS 네이티브 메뉴바 앱**
+
+[English](README.md) | **한국어**
+
+[![Platform](https://img.shields.io/badge/macOS-13%20%E2%80%93%2026%2B-black)](https://github.com/wmyung/tailime/releases/latest)
+[![Arch](https://img.shields.io/badge/arch-Universal%20(arm64%20%2B%20x86__64)-blue)](https://github.com/wmyung/tailime/releases/latest)
+[![Dependencies](https://img.shields.io/badge/dependencies-zero%20external%20packages-brightgreen)](#소스에서-빌드)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Download](https://img.shields.io/badge/Download-TailIME--1.0.0--macos.zip-0071e3)](https://github.com/wmyung/tailime/releases/download/v1.0.0/TailIME-1.0.0-macos.zip)
+
+---
+
+## 왜 만들었나요?
+
+Mac 사용자(특히 **Karabiner-Elements**로 우측 `⌘`/`⌥`를 `F18`/`F19`로 바꿔 쓰며 **RustDesk·화면공유·VNC**로 다른 Mac에 접속하는 환경)는 두 가지 고질적인 고통을 겪습니다.
+
+1. **로컬 한영 전환 딜레이 & 첫 글자 씹힘**: macOS는 키를 **뗄 때** 전환되어 빠르게 치면 글자가 꼬이고(`한dud` → `하dud`), macOS 26+에서는 메모리 절약으로 `TextInputSwitcher`가 종료되어 첫 한영키 입력이 통째로 무시됩니다.
+2. **원격 Mac 제어 시 한영 전환 불능 & 자소 분리**: 로컬 macOS/Karabiner가 한영키를 먼저 가로채 버리거나, RustDesk의 Translate/Map 모드 차이 때문에 원격 Mac의 한영 전환이 안 되거나, 로컬 한글 입력기가 켜진 채 원격 창에 입력해 자소가 깨집니다.
+
+**TailIME**는 기존 Karabiner·macOS 단축키 설정을 **단 한 줄도 건드리지 않고** 이 두 문제를 한 번에 해결합니다.
+
+---
+
+## 바로 다운로드 & 설치
+
+- **[TailIME-1.0.0-macos.zip 다운로드 (Universal arm64 + x86_64)](https://github.com/wmyung/tailime/releases/download/v1.0.0/TailIME-1.0.0-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.0.0/TailIME-1.0.0-macos.zip.sha256))
+
+```bash
+unzip TailIME-1.0.0-macos.zip
+cd TailIME-1.0.0
+./install.sh --link-cli
+```
+
+- macOS `renamex_np(RENAME_SWAP)` 단일 시스템콜로 기존 앱을 안전하게 원자적 교체하며, 실패 시 자동 복원합니다.
+- 기존 `~/.config/karabiner/karabiner.json`이나 시스템 단축키 설정은 절대 수정하지 않습니다.
+
+---
+
+## 기존 방식과의 비교
+
+| 기능 | **TailIME** | `gksdud` | `HangulSync` | Karabiner + RustDesk Map 모드 | macOS 기본 |
+|---|---|---|---|---|---|
+| **로컬 `keyDown` 즉시 전환 (씹힘 없음)** | ✅ 지원 | ✅ 지원 | ❌ 미지원 | ❌ Key-up 지연 | ❌ 지연 있음 |
+| **macOS 26+ `TextInputSwitcher` 자동 깨우기** | ✅ 자동 | ✅ 자동 | ❌ 미지원 | ❌ 미지원 | ❌ 첫 키 씹힘 |
+| **Karabiner 다중 키보드 설정 무충돌 자동 감지** | ✅ 읽기 전용 자동 감지 | ⚠️ HID 충돌 주의 | ✅ 호환 | ⚠️ 수동 설정 | ✅ 호환 |
+| **RustDesk Map / Translate 모두 원격 전환** | ✅ 모두 지원 | ❌ 로컬 전용 | ⚠️ 로컬 IME 충돌 | ❌ Translate/Karabiner 깨짐 | ❌ 로컬 가로챔 |
+| **원격 창 포커스 시 로컬 자동 영문(ABC) 고정** | ✅ 기본 내장 | ❌ 없음 | ❌ 양쪽 미러링 | ❌ 수동 | ❌ 없음 |
+| **In-Band 순서 보장 + Tailscale UDP 하이브리드** | ✅ 자동 프로브 | ❌ 없음 | ❌ TCP 미러링 | ❌ 키 전달만 | ❌ 없음 |
+| **미설치 원격지(Windows 등) 안전 폴백** | ✅ OS별 폴백 | ❌ 없음 | ❌ Mac 전용 | ⚠️ 수동 우측 Alt | ❌ 없음 |
+
+---
+
+## 핵심 기능
+
+### 1. 어떤 한영키 설정이든 자동 호환 (기존 설정 불변)
+- macOS 시스템 단축키 `60`번(`이전 입력 소스 선택`) 자동 감지 (입력 소스가 3개 이상일 때 기존 `60`/`61`번 동작 보존)
+- **Karabiner-Elements** 설정 폴더 감시 및 자동 파싱(전역·장치별 `simple_modifications` 및 `complex_modifications`에서 `F13`–`F20`·`Lang1`·조합키 자동 추출)
+- 하드웨어 `한/영 (Lang1)` 키 자동 감지 + 설정 창 **키 직접 녹화** (`Ctrl+Space`, `Shift+Space`, `우측 ⌘/⌥/⌃ 단독 탭` 등)
+- Karabiner 미사용자만 원할 경우 선택적으로 물리 키보드 전용 HID 리매핑 제공 (기본 OFF, Karabiner 실행 중 자동 잠금)
+
+### 2. 로컬 Mac 초저지연 한영 전환 (macOS 13 ~ 26+)
+- 전용 `.userInteractive` 스레드 **HID 레벨 `CGEventTap`**(`.cghidEventTap`)으로 `keyDown` 즉시 전환
+- macOS 26+ `com.apple.TextInputSwitcher` 백그라운드 자동 웜업
+- `CGEventSource(.privateState)` 원자적 펄스 + `TSMDirectBridge`(`macism` 방식 포커스 앱 직접 전환) 폴백 + 짧은 FIFO `HoldGate`(포커스 변경 시 고아 `keyUp`·모디파이어 보존으로 키 stuck 방지)
+
+### 3. Tailscale 원격 Mac 한영 전환 (RustDesk·화면공유·VNC·Jump·Parsec 등)
+- **하이브리드 절대 상태 동기화**: 토글 대신 **절대 목표 언어(`ko` / `en`)** 전송
+  - 캐리어 키가 통과하는 클라이언트(RustDesk Map, 화면공유 등): HID 탭 내 동기 In-Band 캐리어(`F16`/`F17`) + UDP `expectSet` 안전망으로 DERP 릴레이 환경에서도 순서 역전(`안녀d`/`ㅗello`) 없음
+  - 캐리어가 차단되는 모드(RustDesk Translate 등): 자동으로 **Tailscale 직접 UDP** + Direct 경로 적응형 FIFO 버퍼링으로 전환
+- **원격 창 포커스 시 로컬 Mac 자동 영문(ABC) 고정**: 로컬 한글 IME가 원격 입력을 가로채 자소가 깨지는 문제 방지
+- **메뉴바 원격 상태 표시(`⚡한` / `⚡EN`) + 비활성화 미니 HUD**
+- **보안**: `0.0.0.0` 미바인딩(Tailscale IPv4/IPv6 + `127.0.0.1` 전용), `utun*` 인터페이스 검증, `tailscale status`/`whois` 검증, Keychain Curve25519 기기 신원 + **6자리 SAS 상호 확인** + 피어별 HKDF-SHA256 HMAC + 슬라이딩 윈도우 재전송 방지
+
+---
+
+## 빠른 설정 가이드 (2분)
+
+1. **양쪽 Mac에 설치**: 각 Mac에서 `./install.sh --link-cli` 실행
+2. **권한 허용**: 첫 실행 시 Gatekeeper 안내가 뜨면 `우클릭 → 열기` 후, **[시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용]**에서 `TailIME` 허용
+3. **10초 페어링**: 메뉴바 `TailIME` → **설정 → 원격 Tailscale** 탭에서
+   - **직접 페어링**: 피어 선택 → **직접 페어링 요청** → 양쪽 화면에 동시에 뜨는 **6자리 확인 코드(SAS)** 일치 확인 후 **승인 및 신뢰**
+   - **토큰 교환 (RustDesk 화면 안에서 바로 페어링할 때 편리)**: Mac A **내 페어링 토큰 복사** → Mac B **상대 토큰 붙여넣기** (반대 방향도 동일)
+
+---
+
+## CLI (`tailime-ctl`)
+
+```bash
+tailime-ctl status
+tailime-ctl toggle
+tailime-ctl set ko
+tailime-ctl set en
+tailime-ctl peers
+tailime-ctl remote-set 100.64.0.10 ko
+tailime-ctl pair-export
+echo "TKP1:..." | tailime-ctl pair-import
+```
+
+---
+
+## 소스에서 빌드
+
+Xcode 전체 앱 없이 **Xcode Command Line Tools**(`xcode-select --install`)만으로 빌드·테스트됩니다.
+
+```bash
+git clone https://github.com/wmyung/tailime.git
+cd tailime
+swift run tailime-test
+./scripts/package-dist.sh
+```
+
+> 재빌드 후에도 macOS 손쉬운 사용 권한을 유지하려면 `./scripts/setup-local-cert.sh`로 로컬 서명 인증서를 한 번 만든 뒤 `CODESIGN_IDENTITY="TailIME Local Signing" ./scripts/package-dist.sh`로 빌드하세요.
+
+## 라이선스
+
+[MIT](./LICENSE) © 2026 wmyung
