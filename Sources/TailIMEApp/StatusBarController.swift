@@ -7,6 +7,7 @@ struct StatusBarPresentation {
     let enabled: Bool
     let paused: Bool
     let accessibilityGranted: Bool
+    let keychainErrorStatus: OSStatus?
     let secureInputAppName: String?
     let conflictingApps: [String]
     let remoteContext: ActiveRemoteContext
@@ -27,6 +28,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     var onSelectPinnedPeer: ((String?) -> Void)?
     var onOpenSettings: ((Int) -> Void)? // tab index
     var onRequestAccessibility: (() -> Void)?
+    var onRetryKeychain: (() -> Void)?
     var onRefreshTailscale: (() -> Void)?
     var onQuit: (() -> Void)?
 
@@ -42,6 +44,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         latestPresentation = presentation
 
         let warning = !presentation.accessibilityGranted
+            || presentation.keychainErrorStatus != nil
             || presentation.secureInputAppName != nil
             || !presentation.conflictingApps.isEmpty
         let remoteActive = presentation.remoteContext.hasActiveRemoteSession
@@ -89,12 +92,21 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         guard let p = latestPresentation else { return }
 
-        // 1. Accessibility / Conflict / Secure Input Warnings
+        // 1. Accessibility / Keychain / Conflict / Secure Input Warnings
         if !p.accessibilityGranted {
             let item = makeMenuItem(
                 title: "손쉬운 사용(접근성) 권한 필요 — 클릭하여 열기",
                 symbol: "exclamationmark.triangle.fill",
                 action: #selector(handleRequestAccessibility)
+            )
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
+        if p.keychainErrorStatus != nil {
+            let item = makeMenuItem(
+                title: "키체인 기기 키 접근 거부됨 — 클릭하여 다시 읽기",
+                symbol: "key.fill",
+                action: #selector(handleRetryKeychain)
             )
             menu.addItem(item)
             menu.addItem(.separator())
@@ -223,6 +235,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     @objc private func handleToggleLocal() { onToggleLocalLanguage?() }
     @objc private func handleTogglePause() { onTogglePause?() }
     @objc private func handleRequestAccessibility() { onRequestAccessibility?() }
+    @objc private func handleRetryKeychain() { onRetryKeychain?() }
     @objc private func handleRefreshTailscale() { onRefreshTailscale?() }
     @objc private func handleOpenGeneralSettings() { onOpenSettings?(0) }
     @objc private func handleOpenTriggerSettings() { onOpenSettings?(1) }

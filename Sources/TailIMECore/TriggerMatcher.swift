@@ -207,6 +207,7 @@ public struct TriggerMatcher: Sendable {
         pendingModTap = nil
         pendingCapsTap = nil
         typedWithShift = false
+        lastFnBit = false
     }
 
     /// Releases a keyCode from `swallowedDown` when the caller chooses to pass the original event through.

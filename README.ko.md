@@ -8,7 +8,7 @@
 [![Arch](https://img.shields.io/badge/arch-Universal%20(arm64%20%2B%20x86__64)-blue)](https://github.com/wmyung/tailime/releases/latest)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero%20external%20packages-brightgreen)](#소스에서-빌드)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Download](https://img.shields.io/badge/Download-TailIME--1.0.1--macos.zip-0071e3)](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip)
+[![Download](https://img.shields.io/badge/Download-TailIME--1.0.2--macos.zip-0071e3)](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip)
 
 ---
 
@@ -25,11 +25,11 @@ Mac 사용자(특히 **Karabiner-Elements**로 우측 `⌘`/`⌥`를 `F18`/`F19`
 
 ## 바로 다운로드 & 설치
 
-- **[TailIME-1.0.1-macos.zip 다운로드 (Universal arm64 + x86_64)](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip.sha256))
+- **[TailIME-1.0.2-macos.zip 다운로드 (Universal arm64 + x86_64)](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip.sha256))
 
 ```bash
-unzip TailIME-1.0.1-macos.zip
-cd TailIME-1.0.1
+unzip TailIME-1.0.2-macos.zip
+cd TailIME-1.0.2
 ./install.sh --link-cli
 ```
 
@@ -111,7 +111,7 @@ echo "TKP1:..." | tailime-ctl pair-import
 ### 2. 한영키를 누른 뒤 창 최대화, Dock 선택 등 엉뚱한 단축키가 실행될 때
 - **양쪽 Mac 모두 `v1.0.1` 이상으로 업데이트:** `v1.0.1`은 합성 키 입력 시 `Fn(Globe)` / 모디파이어 플래그가 macOS WindowServer에 남는 문제를 원천 차단하고, 기본 전송 방식을 **Tailscale UDP 직접 전송**으로 설정해 RustDesk에 보조 F키(`F16`/`F17`/`F20`)를 주입하지 않습니다.
 - **RustDesk 권장 설정:** **설정 → 원격 Tailscale → 전송 방식**을 **Tailscale UDP 직접 전송 (권장 · RustDesk 안전)**으로 유지하세요.
-- **`v1.0.0`에서 이미 `Fn(Globe)` 키가 걸린 경우:** 양쪽 Mac에서 물리 키보드의 `Fn(Globe)` 키를 한 번 눌렀다 뗀 뒤 `v1.0.1`로 업데이트하세요.
+- **`v1.0.0`에서 이미 `Fn(Globe)` 키가 걸린 경우:** 양쪽 Mac에서 물리 키보드의 `Fn(Globe)` 키를 한 번 눌렀다 뗀 뒤 `v1.0.1` 이상으로 업데이트하세요.
 
 ### 3. 다양한 한영키(좌/우 `Control`, `Ctrl+Space`, `Cmd+Space`, `Shift+Space`, `Caps Lock`, Karabiner `to_if_alone` 등)가 안 먹힐 때
 - **설정 → 한영키** 탭에서 원하는 프리셋(모든 좌/우 `Control`·`Option`·`Command`·`Shift` 단독 탭 및 `*+Space` 조합 포함)을 추가하거나 **한영키 직접 녹화...**로 직접 등록하세요.
@@ -119,18 +119,21 @@ echo "TKP1:..." | tailime-ctl pair-import
 - **암호 입력 보호(Secure Input):** 터미널 `sudo`, 1Password, 잠금 화면 등 암호 입력창이 열려 있으면 macOS 보안 정책상 모든 이벤트 탭이 일시 차단됩니다. 메뉴바와 **진단** 탭에 표시되는 앱의 암호 입력창을 닫으면 즉시 복구됩니다.
 
 ### 4. 업데이트·재빌드 후 페어링이 끊기거나 손쉬운 사용 권한이 먹지 않을 때
-- **업데이트 시 키체인 확인 창:** Ad-hoc 서명(`codesign --sign -`) 앱은 업데이트할 때마다 바이너리 해시가 바뀌어 macOS 키체인(`com.tailime.app.identity`) 접근 확인 창이 뜹니다. 반드시 **「항상 허용」**을 눌러 주세요. 이 창을 취소·거부하면 기존 기기 키를 읽지 못해 새 Curve25519 키가 생성되며(키체인 저장까지 실패하면 재시작 시 초기화되는 메모리 임시 키로 대체됨), 양쪽 Mac의 키가 어긋나 HMAC 검증에서 패킷이 거부됩니다(`daemonReachable: false`). 복구하려면 키체인 접근을 허용한 뒤 양쪽 Mac의 **설정 → 원격 Tailscale → 신뢰 기기 초기화**를 누르고 *(주의: 신뢰된 원격 Mac 목록 전체가 초기화되므로 다른 페어링 기기도 다시 등록해야 함)* 토큰을 다시 교환하거나 6자리 SAS로 재페어링하세요.
+- **업데이트 시 키체인 확인 창:** Ad-hoc 서명(`codesign --sign -`) 앱은 업데이트할 때마다 바이너리 해시가 바뀌어 macOS 키체인(`com.tailime.app.identity`) 접근 확인 창이 뜹니다. 반드시 **「항상 허용」**을 눌러 주세요.
+  - **`v1.0.2` 이상:** 확인 창을 실수로 취소·거부하더라도 기존 키체인 기기 키를 **절대 덮어쓰지 않습니다**. 대신 메뉴바와 **설정 → 일반** 탭에 경고 배너를 띄우고(`tailime-ctl status`의 `identityPersistent: false`), 페어링/HMAC 통신을 일시 보류합니다. **「키체인 다시 읽기」**를 눌러 **「항상 허용」**을 선택하면 재페어링 없이 기존 연결이 즉시 복구됩니다.
+  - **`v1.0.2` 미만에서 이미 키가 바뀐 경우:** 이전 버전은 키체인 거부 시 새 키를 생성해 양쪽 키가 어긋날 수 있었습니다(`daemonReachable: false`). 이 경우 키체인 접근을 허용한 뒤 양쪽 Mac의 **설정 → 원격 Tailscale → 신뢰 기기 초기화**를 누르고 *(주의: 신뢰된 원격 Mac 목록 전체가 초기화되므로 다른 페어링 기기도 다시 등록해야 함)* 토큰을 다시 교환하거나 6자리 SAS로 재페어링하세요.
 - **손쉬운 사용(TCC) 재등록:** 토글이 켜져 있어도 구버전 서명이 캐시되어 이벤트 탭이 동작하지 않을 수 있습니다. **[시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용]**에서 `TailIME`을 **`-`로 제거한 뒤 `+`로 `/Applications/TailIME.app`을 다시 추가**하세요.
 - **재빌드 시 권한 초기화 줄이기:** `./scripts/setup-local-cert.sh`로 로컬 서명 인증서를 한 번 생성해 `CODESIGN_IDENTITY="TailIME Local Signing" ./scripts/package-dist.sh`로 빌드하면, 서명된 빌드에 한 번 권한을 부여한 뒤 이후 업데이트에서도 **키체인 접근 권한**과 **손쉬운 사용 권한**을 유지하는 데 도움이 됩니다.
 
 ### 5. 원격 Mac(특히 Electron 앱 · RustDesk)에서 한글 자소가 분리되어(`ㄹㅣㄷㅡㅁㅣㅇㅔ`) 입력될 때
 - **macOS `KoreanIM(KIM_Extension)` 포커스 불일치 (Electron / Chromium 앱에서 발생):** macOS 2벌식 한글은 자판 레이아웃(`2SetHangul`)과 조합 서버(`KIM_Extension`) 두 계층으로 동작합니다. 한영 전환 시점에 원격 Mac의 RustDesk 연결 상태 플로팅 창(`RustDesk --cm`) 등이 잠깐 키 포커스를 가져가면 `TextInputSwitcher`에서 `target app and typing focus mismatch`가 발생할 수 있고, 대상 Electron/Chromium 앱(VS Code, Antigravity, Slack, Chrome 등)에 `KIM_Extension`이 붙지 않아 자모가 조합 없이(`ㄹㅣㄷㅡㅁㅣㅇㅔ`) 그대로 입력됩니다.
-  - **빠른 복구:** 원격 Mac에서 `Cmd+Tab`으로 다른 앱에 갔다가 돌아오거나, 다른 창을 한 번 클릭한 뒤 입력창을 다시 클릭하거나, 한영키를 한 번 껐다 켜서 `KIM_Extension` 재연결을 시도해 볼 수 있습니다. 원격 Mac에 떠 있는 RustDesk 연결 상태 창(`--cm`)을 최소화해 두는 것도 포커스 충돌을 줄이는 데 도움이 됩니다.
+  - **내장 완화 (`v1.0.2+`):** 한글 전환 시 키 포커스 PID(`CPSGetKeyFocusProcess`)와 전면 앱(`frontmostApplication`) PID가 다르면 메인 스레드를 막지 않고 `TSMDirectBridge`로 두 대상 프로세스 모두에 직접 전환 신호를 전달한 뒤 25ms 후 TIS 상태를 확인하며, 일반 단축키 펄스 경로에서는 `TextInputSwitcher` 콜드 기동 중 충돌을 막기 위해 폴백 대기 시간을 150ms로 확보했습니다.
+  - **빠른 복구:** 이미 자소가 분리된 상태라면 원격 Mac에서 `Cmd+Tab`으로 다른 앱에 갔다가 돌아오거나, 다른 창을 한 번 클릭한 뒤 입력창을 다시 클릭하거나, 한영키를 한 번 껐다 켜서 `KIM_Extension` 재연결을 시도해 볼 수 있습니다. 원격 Mac에 떠 있는 RustDesk 연결 상태 창(`--cm`)을 최소화해 두는 것도 포커스 충돌을 줄이는 데 도움이 됩니다.
 - **RustDesk 키보드 모드 확인:** RustDesk가 **Translate mode**로 동작하면 `CGEventKeyboardSetUnicodeString`으로 문자를 직접 주입해 macOS `KoreanIM` 조합기를 우회할 수 있습니다. RustDesk 툴바의 키보드 아이콘에서 **Map mode**를 선택(필요 시 같은 메뉴에서 macOS용 **Input Source 1 / 2** 전환)하고, TailIME의 **원격 창 포커스 시 로컬 자동 영문(ABC) 고정**을 켜 두세요.
 
 ### 6. 10초 빠른 진단
 ```bash
-tailime-ctl status   # 권한, 이벤트 탭, 감지된 트리거, 충돌 앱(conflictingApps), 원격 인식 상태 확인
+tailime-ctl status   # 권한, 이벤트 탭, 키체인 키 상태(identityPersistent), 감지된 트리거, 충돌 앱(conflictingApps), 원격 인식 상태 확인
 tailime-ctl peers    # Tailscale 온라인/Direct 경로 및 상대 TailIME 응답(daemonReachable) 확인
 ```
 또는 메뉴바 **진단 및 실시간 키 테스트...**를 열어 키 입력 시 실제로 들어오는 키코드·플래그를 실시간으로 확인할 수 있습니다.

@@ -21,23 +21,87 @@ public struct CryptoIdentity: Sendable {
         self.deviceID = Self.computeDeviceID(publicKeyData: publicKeyData)
     }
 
+    public enum KeychainReadOutcome: Equatable, Sendable {
+        case found(Data)
+        case notFound
+        case accessDenied(OSStatus)
+    }
+
+    public enum IdentityLoadResult: Sendable {
+        case loaded(CryptoIdentity)
+        case created(CryptoIdentity)
+        case keychainLocked(OSStatus)
+        case saveFailed(OSStatus)
+
+        public var identity: CryptoIdentity? {
+            switch self {
+            case .loaded(let id), .created(let id): return id
+            case .keychainLocked, .saveFailed: return nil
+            }
+        }
+
+        public var isPersistent: Bool {
+            identity != nil
+        }
+
+        public var errorStatus: OSStatus? {
+            switch self {
+            case .loaded, .created: return nil
+            case .keychainLocked(let st), .saveFailed(let st): return st
+            }
+        }
+    }
+
     public static func generateEphemeral() -> CryptoIdentity {
         CryptoIdentity(privateKey: Curve25519.KeyAgreement.PrivateKey())
+    }
+
+    /// Loads the persistent Curve25519 identity from Keychain without EVER overwriting an existing item
+    /// if Keychain access was denied/cancelled (`errSecAuthFailed`, `errSecUserCanceled`, etc.).
+    public static func loadOrCreateDetailed(
+        service: String = defaultKeychainService,
+        account: String = defaultKeychainAccount
+    ) -> IdentityLoadResult {
+        loadOrCreateWithStore(
+            read: { readKeychainItemDetailed(service: service, account: account) },
+            add: { addKeychainItem($0, service: service, account: account) },
+            update: { updateKeychainItem($0, service: service, account: account) }
+        )
+    }
+
+    /// Pure testable state machine backing `loadOrCreateDetailed`.
+    public static func loadOrCreateWithStore(
+        read: () -> KeychainReadOutcome,
+        add: (Data) -> OSStatus,
+        update: (Data) -> OSStatus
+    ) -> IdentityLoadResult {
+        switch read() {
+        case .found(let raw):
+            if let key = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: raw) {
+                return .loaded(CryptoIdentity(privateKey: key))
+            }
+            // Read succeeded with corrupted payload -> safely replace with a valid key.
+            let repaired = Curve25519.KeyAgreement.PrivateKey()
+            let st = update(repaired.rawRepresentation)
+            return st == errSecSuccess ? .created(CryptoIdentity(privateKey: repaired)) : .saveFailed(st)
+
+        case .notFound:
+            // Only create a brand-new persistent identity when Keychain explicitly reports errSecItemNotFound.
+            let fresh = Curve25519.KeyAgreement.PrivateKey()
+            let st = add(fresh.rawRepresentation)
+            return st == errSecSuccess ? .created(CryptoIdentity(privateKey: fresh)) : .saveFailed(st)
+
+        case .accessDenied(let status):
+            // NEVER overwrite or rotate an existing Keychain identity on ACL denial / cancel / lock!
+            return .keychainLocked(status)
+        }
     }
 
     public static func loadOrCreateFromKeychain(
         service: String = defaultKeychainService,
         account: String = defaultKeychainAccount
     ) -> CryptoIdentity? {
-        if let raw = readKeychainItem(service: service, account: account),
-           let key = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: raw) {
-            return CryptoIdentity(privateKey: key)
-        }
-        let fresh = Curve25519.KeyAgreement.PrivateKey()
-        guard saveKeychainItem(fresh.rawRepresentation, service: service, account: account) else {
-            return nil
-        }
-        return CryptoIdentity(privateKey: fresh)
+        loadOrCreateDetailed(service: service, account: account).identity
     }
 
     public static func computeDeviceID(publicKeyData: Data) -> String {
@@ -156,7 +220,7 @@ public struct CryptoIdentity: Sendable {
 
     // MARK: - Keychain Helpers
 
-    private static func readKeychainItem(service: String, account: String) -> Data? {
+    private static func readKeychainItemDetailed(service: String, account: String) -> KeychainReadOutcome {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -165,13 +229,31 @@ public struct CryptoIdentity: Sendable {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else {
-            return nil
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecSuccess {
+            if let data = result as? Data {
+                return .found(data)
+            }
+            return .accessDenied(errSecDecode)
         }
-        return result as? Data
+        if status == errSecItemNotFound {
+            return .notFound
+        }
+        return .accessDenied(status)
     }
 
-    private static func saveKeychainItem(_ data: Data, service: String, account: String) -> Bool {
+    private static func addKeychainItem(_ data: Data, service: String, account: String) -> OSStatus {
+        let item: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        return SecItemAdd(item as CFDictionary, nil)
+    }
+
+    private static func updateKeychainItem(_ data: Data, service: String, account: String) -> OSStatus {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -181,11 +263,6 @@ public struct CryptoIdentity: Sendable {
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
-        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-        if status == errSecSuccess { return true }
-        guard status == errSecItemNotFound else { return false }
-        var item = query
-        for (k, v) in attributes { item[k] = v }
-        return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
+        return SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
     }
 }

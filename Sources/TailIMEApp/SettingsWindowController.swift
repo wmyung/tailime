@@ -10,6 +10,7 @@ struct DiagnosticsSummary {
     let sessionTapActive: Bool
     let accessibilityGranted: Bool
     let postEventAccessGranted: Bool
+    let keychainErrorStatus: OSStatus?
     let textInputSwitcherRunning: Bool
     let secureInputAppName: String?
     let conflictingApps: [String]
@@ -26,7 +27,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let tabView = NSTabView()
 
     // Header
-    private let headerVersionLabel = NSTextField(labelWithString: "v1.0.1")
+    private let headerVersionLabel = NSTextField(labelWithString: "v1.0.2")
     private let statusPillContainer = NSView()
     private let statusPillLabel = NSTextField(labelWithString: "")
 
@@ -35,6 +36,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let loginCheck = NSButton(checkboxWithTitle: "로그인 시 자동 실행", target: nil, action: nil)
     private let accessibilityStatusLabel = NSTextField(wrappingLabelWithString: "")
     private let requestAccessibilityBtn = NSButton(title: "손쉬운 사용 권한 열기", target: nil, action: nil)
+    private let keychainBannerCard = NSBox()
+    private let keychainBannerLabel = NSTextField(wrappingLabelWithString: "")
+    private let retryKeychainBtn = NSButton(title: "키체인 다시 읽기", target: nil, action: nil)
     private let conflictBannerCard = NSBox()
     private let conflictBannerLabel = NSTextField(wrappingLabelWithString: "")
     private let envSummaryLabel = NSTextField(wrappingLabelWithString: "")
@@ -101,8 +105,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onSettingsMutate: (((inout AppSettings) -> Void) -> Void)?
     var onToggleLoginItem: ((Bool) -> Void)?
     var onRequestAccessibility: (() -> Void)?
+    var onRetryKeychain: (() -> Void)?
     var onStartRecordingTrigger: (() -> Void)?
-    var onInitiatePairing: ((String) -> Void)?
+    var onInitiatePairing: ((String) -> String)?
     var onPingPeer: ((String, @escaping (String) -> Void) -> Void)?
     var onCopyMyPairingToken: (() -> String?)?
     var onImportPairingToken: ((String) -> String)?
@@ -200,6 +205,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             applyStatusPill(text: "⏸ 일시정지", bg: NSColor.systemGray.withAlphaComponent(0.18), fg: .secondaryLabelColor)
         } else if !diagnostics.accessibilityGranted {
             applyStatusPill(text: "⚠ 손쉬운 사용 권한 필요", bg: NSColor.systemOrange.withAlphaComponent(0.18), fg: .systemOrange)
+        } else if diagnostics.keychainErrorStatus != nil {
+            applyStatusPill(text: "⚠ 키체인 접근 필요", bg: NSColor.systemOrange.withAlphaComponent(0.18), fg: .systemOrange)
         } else if !diagnostics.conflictingApps.isEmpty {
             applyStatusPill(text: "⚠ 충돌 앱 감지", bg: NSColor.systemOrange.withAlphaComponent(0.18), fg: .systemOrange)
         } else if diagnostics.secureInputAppName != nil {
@@ -216,6 +223,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             : "⚠ 손쉬운 사용 권한이 필요합니다. 허용 즉시 재시작 없이 자동으로 활성화됩니다."
         accessibilityStatusLabel.textColor = diagnostics.accessibilityGranted ? .systemGreen : .systemOrange
         requestAccessibilityBtn.isHidden = diagnostics.accessibilityGranted
+
+        if let kcErr = diagnostics.keychainErrorStatus {
+            keychainBannerCard.isHidden = false
+            keychainBannerLabel.stringValue = "⚠ 키체인 기기 키(com.tailime.app.identity) 접근이 거부되었습니다 (OSStatus \(kcErr)).\n기존 페어링 키를 보호하기 위해 덮어쓰지 않았습니다. 아래 버튼을 눌러 「항상 허용」을 선택하면 재페어링 없이 즉시 복구됩니다."
+        } else {
+            keychainBannerCard.isHidden = true
+        }
 
         if diagnostics.conflictingApps.isEmpty {
             conflictBannerCard.isHidden = true
@@ -311,9 +325,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let conflictText = diagnostics.conflictingApps.isEmpty
             ? "없음 (정상)"
             : "⚠ \(diagnostics.conflictingApps.joined(separator: ", ")) (종료 권장)"
+        let keychainText = diagnostics.keychainErrorStatus.map { "⚠ 접근 거부됨 (OSStatus \($0) · 재읽기 필요)" }
+            ?? "정상 (영구 기기 키 로드됨)"
         diagSummaryLabel.stringValue = """
         • 버전 / EventTap    : v\(diagnostics.version)  |  HID=\(diagnostics.hidTapActive ? "활성" : "비활성")  ·  Session=\(diagnostics.sessionTapActive ? "활성" : "비활성")
         • 권한 상태          : 접근성=\(diagnostics.accessibilityGranted ? "허용" : "거부")  ·  이벤트 포스팅=\(diagnostics.postEventAccessGranted ? "허용" : "거부")
+        • 키체인 기기 키     : \(keychainText)
         • Secure Input       : \(diagnostics.secureInputAppName ?? "비활성 (정상)")
         • 충돌 가능 앱       : \(conflictText)
         • 현재 원격 컨텍스트 : \(diagnostics.activeRemoteDescription)
@@ -508,6 +525,33 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         envSummaryLabel.font = .monospacedSystemFont(ofSize: 11.5, weight: .regular)
         envSummaryLabel.textColor = .secondaryLabelColor
 
+        keychainBannerLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
+        keychainBannerLabel.textColor = .systemOrange
+        retryKeychainBtn.target = self; retryKeychainBtn.action = #selector(tapRetryKeychain)
+        retryKeychainBtn.bezelColor = .controlAccentColor
+        keychainBannerCard.boxType = .custom
+        keychainBannerCard.cornerRadius = 10
+        keychainBannerCard.borderWidth = 1
+        keychainBannerCard.borderColor = NSColor.systemOrange.withAlphaComponent(0.55)
+        keychainBannerCard.fillColor = NSColor.systemOrange.withAlphaComponent(0.10)
+        keychainBannerCard.contentViewMargins = NSSize(width: 14, height: 10)
+        keychainBannerCard.translatesAutoresizingMaskIntoConstraints = false
+        let kcStack = NSStackView(views: [keychainBannerLabel, retryKeychainBtn])
+        kcStack.orientation = .vertical
+        kcStack.alignment = .leading
+        kcStack.spacing = 6
+        kcStack.translatesAutoresizingMaskIntoConstraints = false
+        keychainBannerCard.contentView?.addSubview(kcStack)
+        if let c = keychainBannerCard.contentView {
+            NSLayoutConstraint.activate([
+                kcStack.topAnchor.constraint(equalTo: c.topAnchor),
+                kcStack.leadingAnchor.constraint(equalTo: c.leadingAnchor),
+                kcStack.trailingAnchor.constraint(equalTo: c.trailingAnchor),
+                kcStack.bottomAnchor.constraint(equalTo: c.bottomAnchor),
+            ])
+        }
+        keychainBannerCard.isHidden = true
+
         conflictBannerLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         conflictBannerLabel.textColor = .systemOrange
         conflictBannerCard.boxType = .custom
@@ -550,7 +594,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             views: [testInputField]
         )
 
-        let stack = NSStackView(views: [coreCard, conflictBannerCard, envCard, testCard])
+        let stack = NSStackView(views: [coreCard, keychainBannerCard, conflictBannerCard, envCard, testCard])
         NSLayoutConstraint.activate([
             testInputField.widthAnchor.constraint(greaterThanOrEqualToConstant: 580),
         ])
@@ -732,6 +776,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         onRequestAccessibility?()
     }
 
+    @objc private func tapRetryKeychain() {
+        onRetryKeychain?()
+    }
+
     @objc private func toggleAutoDetect() {
         let sys = autoSystemCheck.state == .on
         let kar = autoKarabinerCheck.state == .on
@@ -808,8 +856,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func tapPairDirect() {
         guard let ip = selectedPeerIP() else { return }
-        remoteActionStatusLabel.stringValue = "\(ip)로 페어링 요청을 보냈습니다. 상대 Mac 화면에서 6자리 코드를 승인하세요."
-        onInitiatePairing?(ip)
+        let msg = onInitiatePairing?(ip) ?? "\(ip)로 페어링 요청을 보냈습니다. 상대 Mac 화면에서 6자리 코드를 승인하세요."
+        remoteActionStatusLabel.stringValue = msg
     }
 
     @objc private func tapPingPeer() {
@@ -824,7 +872,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func tapCopyToken() {
         guard let token = onCopyMyPairingToken?() else {
-            remoteActionStatusLabel.stringValue = "페어링 토큰 생성 실패"
+            if latestDiagnostics?.keychainErrorStatus != nil {
+                remoteActionStatusLabel.stringValue = "⚠ 키체인 기기 키 접근이 거부되어 토큰을 생성할 수 없습니다. '키체인 다시 읽기'에서 허용해 주세요."
+            } else {
+                remoteActionStatusLabel.stringValue = "페어링 토큰 생성 실패"
+            }
             return
         }
         NSPasteboard.general.clearContents()
@@ -870,11 +922,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func tapCopyDiag() {
         guard let d = latestDiagnostics else { return }
+        let kcDiag = d.keychainErrorStatus.map { "locked (OSStatus \($0))" } ?? "persistent"
         let summary = """
         TailIME v\(d.version) Diagnostics
         - Enabled: \(d.enabled), Paused: \(d.paused)
         - EventTap: HID=\(d.hidTapActive), Session=\(d.sessionTapActive)
         - Permissions: Accessibility=\(d.accessibilityGranted), PostEvent=\(d.postEventAccessGranted)
+        - Keychain: \(kcDiag)
         - TextInputSwitcher: \(d.textInputSwitcherRunning ? "running" : "idle")
         - SecureInput: \(d.secureInputAppName ?? "none")
         - ConflictingApps: \(d.conflictingApps.isEmpty ? "none" : d.conflictingApps.joined(separator: ", "))

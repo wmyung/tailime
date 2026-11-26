@@ -7,7 +7,8 @@ import TailIMECore
 /// continuous Auto-ABC locking on remote focus, mutual pre-approval 6-digit SAS pairing,
 /// strict `(deviceID, sourceIP, nonce, replyToSeq)` ACK binding, and fallback key bridging.
 final class RemoteCoordinator {
-    let identity: CryptoIdentity
+    private(set) var identity: CryptoIdentity
+    private(set) var identityPersistent: Bool
     let bootSessionID: String
     let settingsStore: SettingsStore
     let localEngine: LocalSwitchEngine
@@ -84,12 +85,14 @@ final class RemoteCoordinator {
 
     init(
         identity: CryptoIdentity,
+        identityPersistent: Bool = true,
         settingsStore: SettingsStore,
         localEngine: LocalSwitchEngine,
         tapController: EventTapController,
         udpEndpoint: TailscaleUDPEndpoint
     ) {
         self.identity = identity
+        self.identityPersistent = identityPersistent
         self.bootSessionID = UUID().uuidString.prefix(12).description
         self.settingsStore = settingsStore
         self.localEngine = localEngine
@@ -126,11 +129,23 @@ final class RemoteCoordinator {
         onStateUpdated?()
     }
 
+    func updateIdentity(_ newIdentity: CryptoIdentity, persistent: Bool) {
+        identity = newIdentity
+        identityPersistent = persistent
+        syncKeysToEndpoint()
+        if persistent {
+            probeAllPairedMacPeers()
+        }
+        onStateUpdated?()
+    }
+
     func syncKeysToEndpoint() {
         var map: [String: SymmetricKey] = [:]
-        for record in settingsStore.trustedPeers {
-            if let key = identity.derivePeerHMACKey(peerPublicKeyBase64: record.publicKeyBase64) {
-                map[record.deviceID] = key
+        if identityPersistent {
+            for record in settingsStore.trustedPeers {
+                if let key = identity.derivePeerHMACKey(peerPublicKeyBase64: record.publicKeyBase64) {
+                    map[record.deviceID] = key
+                }
             }
         }
         udpEndpoint.updatePeerKeys(map)
@@ -151,21 +166,23 @@ final class RemoteCoordinator {
         if settings.remoteSyncEnabled && ctx.hasActiveRemoteSession {
             if let peer = ctx.resolvedPeer, let ip = peer.preferredIP,
                trustedRecord(forPeer: peer) != nil {
-                let sessionKey = "\(ctx.bundleID)|\(ip)"
-                let isRustDesk = ctx.bundleID.lowercased().contains("rustdesk")
-                // Prefer pure Direct UDP + adaptive HoldGate on Direct Tailscale paths and ALWAYS on RustDesk
-                // (RustDesk's rdev/enigo maps extended F16/F17/F20 inconsistently on macOS).
-                // On DERP-relayed non-RustDesk sessions (e.g. Apple Screen Sharing) or explicit inBandOnly, allow in-band carriers.
-                let usesInBand = (settings.transportMode == .inBandOnly)
-                    || (settings.transportMode == .autoHybrid && !isRustDesk && !peer.isDirectPath && carrierSupportBySessionKey[sessionKey] == true)
-                if usesInBand {
-                    let currentRemoteLang = peerStates[ip]?.currentLanguage
-                        ?? lastKnownRemoteLanguageByIP[ip]
-                        ?? .english
-                    nextInBandCarrierKeyCode = carrierPair.keyCode(for: currentRemoteLang.toggled)
-                } else if peer.isDirectPath {
-                    let rttSec = (peerStates[ip]?.lastRTTMs ?? 8.0) / 1000.0
-                    holdDuration = min(0.060, max(0.020, rttSec * 2.0 + 0.012))
+                if identityPersistent {
+                    let sessionKey = "\(ctx.bundleID)|\(ip)"
+                    let isRustDesk = ctx.bundleID.lowercased().contains("rustdesk")
+                    // Prefer pure Direct UDP + adaptive HoldGate on Direct Tailscale paths and ALWAYS on RustDesk
+                    // (RustDesk's rdev/enigo maps extended F16/F17/F20 inconsistently on macOS).
+                    // On DERP-relayed non-RustDesk sessions (e.g. Apple Screen Sharing) or explicit inBandOnly, allow in-band carriers.
+                    let usesInBand = (settings.transportMode == .inBandOnly)
+                        || (settings.transportMode == .autoHybrid && !isRustDesk && !peer.isDirectPath && carrierSupportBySessionKey[sessionKey] == true)
+                    if usesInBand {
+                        let currentRemoteLang = peerStates[ip]?.currentLanguage
+                            ?? lastKnownRemoteLanguageByIP[ip]
+                            ?? .english
+                        nextInBandCarrierKeyCode = carrierPair.keyCode(for: currentRemoteLang.toggled)
+                    } else if peer.isDirectPath {
+                        let rttSec = (peerStates[ip]?.lastRTTMs ?? 8.0) / 1000.0
+                        holdDuration = min(0.060, max(0.020, rttSec * 2.0 + 0.012))
+                    }
                 }
             } else if !ctx.isAmbiguousMultiSession {
                 let fallbackAction = RemoteTargetResolver.resolveFallbackAction(
@@ -297,8 +314,14 @@ final class RemoteCoordinator {
                 if holdGen != 0 {
                     tapController.flushHoldGateAsync(reason: .completed, expectedGeneration: holdGen)
                 }
+                if !identityPersistent {
+                    if !pairedCandidates.isEmpty && settings.showRemoteHUD {
+                        onRemoteSwitchedHUD?("키체인 접근 허용 필요", nil, nil, true)
+                    }
+                    return
+                }
                 let isRustDesk = context.bundleID.lowercased().contains("rustdesk")
-                if settings.transportMode != .udpDirectOnly && !isRustDesk {
+                if settings.transportMode != .udpDirectOnly && !isRustDesk && !pairedCandidates.isEmpty {
                     probeAndBindAmbiguousSession(context: context)
                 } else if settings.showRemoteHUD {
                     onRemoteSwitchedHUD?("원격 대상 선택 필요 (메뉴바에서 고정)", nil, nil, true)
@@ -315,12 +338,22 @@ final class RemoteCoordinator {
             return
         }
 
-        guard let trusted = trustedRecord(forPeer: peer),
-              let hmacKey = identity.derivePeerHMACKey(peerPublicKeyBase64: trusted.publicKeyBase64) else {
+        guard let trusted = trustedRecord(forPeer: peer) else {
             if holdGen != 0 {
                 tapController.flushHoldGateAsync(reason: .completed, expectedGeneration: holdGen)
             }
             executeFallbackBridge(spec: spec, isOwned: isOwned, peer: peer, context: context)
+            return
+        }
+
+        guard identityPersistent,
+              let hmacKey = identity.derivePeerHMACKey(peerPublicKeyBase64: trusted.publicKeyBase64) else {
+            if holdGen != 0 {
+                tapController.flushHoldGateAsync(reason: .completed, expectedGeneration: holdGen)
+            }
+            if settings.showRemoteHUD {
+                onRemoteSwitchedHUD?("키체인 접근 허용 필요", nil, nil, true)
+            }
             return
         }
 
@@ -456,7 +489,7 @@ final class RemoteCoordinator {
             bootSessionID: bootSessionID,
             seq: seq,
             targetLanguage: targetLang,
-            version: "1.0.1"
+            version: "1.0.2"
         )
         udpEndpoint.send(message: msg, toIP: ip, key: key, nonce: nonce)
 
@@ -506,7 +539,7 @@ final class RemoteCoordinator {
             seq: seq,
             targetLanguage: targetLang,
             carrierDeadlineMs: deadlineMs,
-            version: "1.0.1"
+            version: "1.0.2"
         )
         udpEndpoint.send(message: msg, toIP: ip, key: key, nonce: nonce)
 
@@ -542,7 +575,8 @@ final class RemoteCoordinator {
                 $0.name.caseInsensitiveCompare(targetQuery) == .orderedSame
             }
         }
-        guard let trusted,
+        guard identityPersistent,
+              let trusted,
               let liveIP = resolveLiveIP(for: trusted) ?? (TailscaleIPValidator.isTailscaleIP(targetQuery) ? targetQuery : nil),
               let hmacKey = identity.derivePeerHMACKey(peerPublicKeyBase64: trusted.publicKeyBase64) else {
             return nil
@@ -567,7 +601,8 @@ final class RemoteCoordinator {
     }
 
     func requestStatus(fromPeerIP ip: String, hostName: String) {
-        guard let trusted = trustedRecord(forIP: ip),
+        guard identityPersistent,
+              let trusted = trustedRecord(forIP: ip),
               let key = identity.derivePeerHMACKey(peerPublicKeyBase64: trusted.publicKeyBase64) else {
             return
         }
@@ -585,6 +620,14 @@ final class RemoteCoordinator {
         ip: String,
         completion: ((Result<(host: String, rttMs: Double, lang: InputLanguage), Error>) -> Void)? = nil
     ) {
+        guard identityPersistent else {
+            completion?(.failure(NSError(
+                domain: "TailIME",
+                code: 403,
+                userInfo: [NSLocalizedDescriptionKey: "키체인 기기 키 접근이 거부되어 있습니다. '키체인 다시 읽기'를 눌러 허용해 주세요."]
+            )))
+            return
+        }
         guard let trusted = trustedRecord(forIP: ip),
               let key = identity.derivePeerHMACKey(peerPublicKeyBase64: trusted.publicKeyBase64) else {
             completion?(.failure(NSError(
@@ -613,7 +656,7 @@ final class RemoteCoordinator {
             senderName: hostDisplayName,
             bootSessionID: bootSessionID,
             seq: seq,
-            version: "1.0.1"
+            version: "1.0.2"
         )
         udpEndpoint.send(message: msg, toIP: ip, key: key, nonce: nonce)
 
@@ -628,6 +671,7 @@ final class RemoteCoordinator {
     }
 
     func probeAllPairedMacPeers() {
+        guard identityPersistent else { return }
         for trusted in settingsStore.trustedPeers {
             if let ip = resolveLiveIP(for: trusted) {
                 pingPeer(ip: ip, completion: nil)
@@ -636,6 +680,7 @@ final class RemoteCoordinator {
     }
 
     func broadcastLocalStateChange(_ info: InputSourceInfo) {
+        guard identityPersistent else { return }
         let now = ProcessInfo.processInfo.systemUptime
         for trusted in settingsStore.trustedPeers {
             guard let ip = resolveLiveIP(for: trusted),
@@ -667,13 +712,14 @@ final class RemoteCoordinator {
         key: SymmetricKey,
         windowTitle: String
     ) {
+        guard identityPersistent else { return }
         let carrierPair = tapController.currentSnapshot().carrierPair
         let token = UInt64.random(in: 1...UInt64.max)
 
         tapController.injectInBandCarrier(keyCode: carrierPair.probeKeyCode)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.09) { [weak self] in
-            guard let self else { return }
+            guard let self, self.identityPersistent else { return }
             let seq = self.nextSeq()
             let nonce = UInt64.random(in: 1...UInt64.max)
             self.pendingProbes[seq] = PendingProbe(
@@ -700,13 +746,14 @@ final class RemoteCoordinator {
     }
 
     private func probeAndBindAmbiguousSession(context: ActiveRemoteContext) {
+        guard identityPersistent else { return }
         let carrierPair = tapController.currentSnapshot().carrierPair
         let token = UInt64.random(in: 1...UInt64.max)
 
         tapController.injectInBandCarrier(keyCode: carrierPair.probeKeyCode)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.09) { [weak self] in
-            guard let self else { return }
+            guard let self, self.identityPersistent else { return }
             for ip in context.candidatePeerIPs {
                 guard let trusted = self.trustedRecord(forIP: ip),
                       let key = self.identity.derivePeerHMACKey(peerPublicKeyBase64: trusted.publicKeyBase64) else {
@@ -740,7 +787,9 @@ final class RemoteCoordinator {
 
     // MARK: - Direct Tailscale Pairing (Mutual Pre-Approval Key Exchange + 6-Digit SAS)
 
-    func initiatePairing(withPeerIP ip: String, isReply: Bool = false) {
+    @discardableResult
+    func initiatePairing(withPeerIP ip: String, isReply: Bool = false) -> Bool {
+        guard identityPersistent else { return false }
         let hello = WireMessage(
             cmd: .pairHello,
             senderDeviceID: identity.deviceID,
@@ -749,9 +798,10 @@ final class RemoteCoordinator {
             seq: nextSeq(),
             publicKeyBase64: identity.publicKeyBase64,
             pairReply: isReply,
-            version: "1.0.1"
+            version: "1.0.2"
         )
         udpEndpoint.send(message: hello, toIP: ip, key: nil)
+        return true
     }
 
     @discardableResult
@@ -850,7 +900,7 @@ final class RemoteCoordinator {
                 currentLanguage: cur?.language ?? .english,
                 sourceID: cur?.id,
                 ok: true,
-                version: "1.0.1"
+                version: "1.0.2"
             )
             udpEndpoint.send(message: pong, toIP: srcIP, port: srcPort, key: peerKey, nonce: incoming.packet.nonce)
 
@@ -1114,7 +1164,8 @@ final class RemoteCoordinator {
     }
 
     private func handleIncomingPairHello(msg: WireMessage, srcIP: String, srcPort: UInt16) {
-        guard let pubKey = msg.publicKeyBase64,
+        guard identityPersistent,
+              let pubKey = msg.publicKeyBase64,
               CryptoIdentity.deviceID(forPublicKeyBase64: pubKey) == msg.senderDeviceID,
               msg.senderDeviceID != identity.deviceID else {
             return

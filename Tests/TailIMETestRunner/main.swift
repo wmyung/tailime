@@ -3,6 +3,7 @@ import CryptoKit
 import CSystemBridge
 import Darwin
 import Foundation
+import Security
 import TailIMECore
 
 // MARK: - Minimal Zero-Dependency Test Harness (works with Command Line Tools without Xcode.app)
@@ -90,6 +91,76 @@ runTest("Pairing token round-trip succeeds and rejects tampered tokens") {
     try expectEqual(decoded.tailscaleIP, "100.64.0.10")
     try expectEqual(decoded.port, 39418)
     try expect(CryptoIdentity.decodePairingToken(token + "x") == nil)
+}
+
+runTest("CryptoIdentity Keychain loader NEVER overwrites existing key on ACL denial or cancel") {
+    let originalKey = Curve25519.KeyAgreement.PrivateKey()
+    let expectedID = CryptoIdentity(privateKey: originalKey).deviceID
+
+    // 1. Valid existing item -> loads without adding or updating
+    var addCount = 0
+    var updateCount = 0
+    let loaded = CryptoIdentity.loadOrCreateWithStore(
+        read: { .found(originalKey.rawRepresentation) },
+        add: { _ in addCount += 1; return errSecSuccess },
+        update: { _ in updateCount += 1; return errSecSuccess }
+    )
+    try expectEqual(loaded.identity?.deviceID, expectedID)
+    try expectEqual(loaded.isPersistent, true)
+    try expect(loaded.errorStatus == nil)
+    try expectEqual(addCount, 0)
+    try expectEqual(updateCount, 0)
+
+    // 2. ACL denial / user cancel -> returns .keychainLocked and calls NEITHER add NOR update!
+    for deniedStatus in [errSecAuthFailed, errSecUserCanceled, errSecInteractionNotAllowed] {
+        var deniedAdds = 0
+        var deniedUpdates = 0
+        let res = CryptoIdentity.loadOrCreateWithStore(
+            read: { .accessDenied(deniedStatus) },
+            add: { _ in deniedAdds += 1; return errSecSuccess },
+            update: { _ in deniedUpdates += 1; return errSecSuccess }
+        )
+        try expect(res.identity == nil, "Must not silently mint a new identity on \(deniedStatus)")
+        try expectEqual(res.isPersistent, false)
+        try expectEqual(res.errorStatus, deniedStatus)
+        try expectEqual(deniedAdds, 0)
+        try expectEqual(deniedUpdates, 0)
+    }
+
+    // 3. Explicit .notFound -> calls add() once and never update()
+    var savedBytes: Data?
+    var notFoundUpdates = 0
+    let created = CryptoIdentity.loadOrCreateWithStore(
+        read: { .notFound },
+        add: { savedBytes = $0; return errSecSuccess },
+        update: { _ in notFoundUpdates += 1; return errSecSuccess }
+    )
+    try expectEqual(created.isPersistent, true)
+    try expectEqual(notFoundUpdates, 0)
+    try expectEqual(savedBytes?.count, 32)
+    let reloaded = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: unwrap(savedBytes))
+    try expectEqual(CryptoIdentity(privateKey: reloaded).deviceID, created.identity?.deviceID)
+
+    // 4. .notFound with add() failing (e.g. errSecDuplicateItem) -> returns .saveFailed
+    let saveFail = CryptoIdentity.loadOrCreateWithStore(
+        read: { .notFound },
+        add: { _ in errSecDuplicateItem },
+        update: { _ in errSecSuccess }
+    )
+    try expectEqual(saveFail.isPersistent, false)
+    try expectEqual(saveFail.errorStatus, errSecDuplicateItem)
+
+    // 5. Corrupt payload -> calls update() once (never add()) to repair
+    var corruptAdds = 0
+    var repairedBytes: Data?
+    let repaired = CryptoIdentity.loadOrCreateWithStore(
+        read: { .found(Data([0x01, 0x02])) },
+        add: { _ in corruptAdds += 1; return errSecSuccess },
+        update: { repairedBytes = $0; return errSecSuccess }
+    )
+    try expectEqual(repaired.isPersistent, true)
+    try expectEqual(corruptAdds, 0)
+    try expectEqual(repairedBytes?.count, 32)
 }
 
 runTest("Authenticated TIV1 packet round-trip, tamper rejection, and clock skew") {
@@ -539,6 +610,88 @@ runTest("Stale generation ignored; capacity and deadline auto-flush safely") {
     _ = gate.arm(now: 20.0, maxDuration: 0.03)
     _ = gate.enqueueIfArmed(10, kind: .keyDown, keyCode: 3, now: 20.01)
     try expectEqual(gate.enqueueIfArmed(11, kind: .keyUp, keyCode: 3, now: 20.04).overflowFlush, [10, 11])
+}
+
+runTest("SwitchGenerationTracker prevents stale async IPC from inverting latest switch (EN -> in-flight KO -> EN)") {
+    let tracker = SwitchGenerationTracker()
+    let ipcQueue = DispatchQueue(label: "com.tailime.test.switch-tracker")
+    let stateLock = NSLock()
+    var simulatedLang: InputLanguage = .english
+    var pid2SentForGen1 = false
+    var completedGens: [UInt64] = []
+
+    // No in-flight direct switch -> short-circuit allowed when already at target
+    try expectEqual(tracker.canShortCircuitAlreadyAtTarget(true), true)
+    try expectEqual(tracker.canShortCircuitAlreadyAtTarget(false), false)
+
+    // 1. Start gen 1 (KO) on serial IPC queue, pause mid-flight after PID 1 starts
+    let pid1Started = DispatchSemaphore(value: 0)
+    let allowPID1Finish = DispatchSemaphore(value: 0)
+    let allDone = DispatchSemaphore(value: 0)
+
+    let gen1 = tracker.advance()
+    tracker.beginInFlightDirectSwitch()
+    ipcQueue.async {
+        if tracker.isCurrent(gen1) {
+            pid1Started.signal()
+            _ = allowPID1Finish.wait(timeout: .now() + 2.0)
+            // PID 1 completes late and mutates OS state to Korean
+            stateLock.lock()
+            simulatedLang = .korean
+            stateLock.unlock()
+        }
+        // Before PID 2, gen1 MUST re-check isCurrent and abort!
+        if tracker.isCurrent(gen1) {
+            stateLock.lock()
+            pid2SentForGen1 = true
+            stateLock.unlock()
+        }
+        if tracker.isCurrent(gen1) {
+            stateLock.lock()
+            completedGens.append(gen1)
+            stateLock.unlock()
+        }
+        tracker.endInFlightDirectSwitch()
+    }
+
+    try expectEqual(pid1Started.wait(timeout: .now() + 2.0), .success)
+
+    // 2. While gen1 (KO) is mid-flight, OS still reports EN, and user requests EN (gen2)!
+    try expectEqual(tracker.hasInFlightDirectSwitch, true)
+    // MUST NOT short-circuit even though current language is still EN!
+    try expectEqual(tracker.canShortCircuitAlreadyAtTarget(true), false)
+
+    let gen2 = tracker.advance()
+    try expectEqual(tracker.isCurrent(gen1), false)
+    try expectEqual(tracker.isCurrent(gen2), true)
+
+    tracker.beginInFlightDirectSwitch()
+    ipcQueue.async {
+        if tracker.isCurrent(gen2) {
+            stateLock.lock()
+            simulatedLang = .english
+            completedGens.append(gen2)
+            stateLock.unlock()
+        }
+        tracker.endInFlightDirectSwitch()
+        allDone.signal()
+    }
+
+    // Release stalled PID 1 of gen1 and wait for serial queue to drain
+    allowPID1Finish.signal()
+    try expectEqual(allDone.wait(timeout: .now() + 2.0), .success)
+
+    stateLock.lock()
+    let finalLang = simulatedLang
+    let pid2Ran = pid2SentForGen1
+    let gens = completedGens
+    stateLock.unlock()
+
+    try expectEqual(finalLang, .english, "Latest request (EN) must win over stale in-flight KO IPC")
+    try expectEqual(pid2Ran, false, "Stale gen1 must abort before sending to second PID")
+    try expectEqual(gens, [gen2], "Only latest generation should complete")
+    try expectEqual(tracker.hasInFlightDirectSwitch, false)
+    try expectEqual(tracker.canShortCircuitAlreadyAtTarget(true), true)
 }
 
 // MARK: - 4. Remote Resolver, Tailscale, SocketInspector & CSystemBridge

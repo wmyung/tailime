@@ -13,14 +13,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hudController = HUDPanelController()
     private let statusBarController = StatusBarController()
 
-    private lazy var identity: CryptoIdentity = {
-        CryptoIdentity.loadOrCreateFromKeychain() ?? CryptoIdentity.generateEphemeral()
-    }()
+    private var identity: CryptoIdentity = CryptoIdentity.generateEphemeral()
+    private var identityPersistent = false
+    private var keychainErrorStatus: OSStatus?
     private lazy var localEngine = LocalSwitchEngine(syntheticMarker: syntheticMarker)
     private lazy var tapController = EventTapController(syntheticMarker: syntheticMarker)
     private lazy var udpEndpoint = TailscaleUDPEndpoint(port: settingsStore.settings.udpPort)
     private lazy var remoteCoordinator = RemoteCoordinator(
         identity: identity,
+        identityPersistent: identityPersistent,
         settingsStore: settingsStore,
         localEngine: localEngine,
         tapController: tapController,
@@ -53,6 +54,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+
+        // Load persistent Curve25519 identity from Keychain (non-destructive if ACL is denied/cancelled).
+        loadKeychainIdentity(notifyCoordinator: false)
 
         setupSignalHandlers()
         wireEverything()
@@ -215,6 +219,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController.onRequestAccessibility = { [weak self] in
             self?.requestAccessibilityPermission()
         }
+        statusBarController.onRetryKeychain = { [weak self] in
+            self?.loadKeychainIdentity(notifyCoordinator: true)
+        }
         statusBarController.onRefreshTailscale = { [weak self] in
             self?.refreshTailscaleAsync(probePaired: true)
         }
@@ -244,11 +251,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.onRequestAccessibility = { [weak self] in
             self?.requestAccessibilityPermission()
         }
+        settingsWindow.onRetryKeychain = { [weak self] in
+            self?.loadKeychainIdentity(notifyCoordinator: true)
+        }
         settingsWindow.onStartRecordingTrigger = { [weak self] in
             self?.tapController.updateSnapshot { $0.isRecordingTrigger = true }
         }
         settingsWindow.onInitiatePairing = { [weak self] ip in
-            self?.remoteCoordinator.initiatePairing(withPeerIP: ip)
+            guard let self else { return "오류" }
+            if !self.identityPersistent && !self.loadKeychainIdentity(notifyCoordinator: true) {
+                return "⚠ 키체인 기기 키 접근이 거부되어 페어링을 시작할 수 없습니다. '키체인 다시 읽기'에서 허용해 주세요."
+            }
+            if self.remoteCoordinator.initiatePairing(withPeerIP: ip) {
+                return "\(ip)로 페어링 요청을 보냈습니다. 상대 Mac 화면에서 6자리 코드를 승인하세요."
+            }
+            return "⚠ 페어링 요청을 보낼 수 없습니다."
         }
         settingsWindow.onPingPeer = { [weak self] ip, done in
             self?.remoteCoordinator.pingPeer(ip: ip) { result in
@@ -262,6 +279,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         settingsWindow.onCopyMyPairingToken = { [weak self] in
             guard let self else { return nil }
+            if !self.identityPersistent && !self.loadKeychainIdentity(notifyCoordinator: true) {
+                return nil
+            }
             let ip = self.remoteCoordinator.currentTailscaleSnapshot.selfNode?.ipv4
             return self.identity.exportPairingToken(
                 hostName: self.remoteCoordinator.hostDisplayName,
@@ -468,6 +488,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @discardableResult
+    private func loadKeychainIdentity(notifyCoordinator: Bool) -> Bool {
+        let result = CryptoIdentity.loadOrCreateDetailed()
+        switch result {
+        case .loaded(let loaded), .created(let loaded):
+            identity = loaded
+            identityPersistent = true
+            keychainErrorStatus = nil
+            if notifyCoordinator {
+                remoteCoordinator.updateIdentity(loaded, persistent: true)
+                refreshAllUI()
+            }
+            return true
+        case .keychainLocked(let status), .saveFailed(let status):
+            identityPersistent = false
+            keychainErrorStatus = status
+            if notifyCoordinator {
+                remoteCoordinator.updateIdentity(identity, persistent: false)
+                refreshAllUI()
+            }
+            return false
+        }
+    }
+
     private func requestAccessibilityPermission() {
         let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(opts)
@@ -500,12 +544,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let conflicts = self.detectConflictingIMEApps()
                 return [
                     "ok": true,
-                    "version": "1.0.1",
+                    "version": "1.0.2",
                     "enabled": self.settingsStore.settings.enabled,
                     "paused": self.paused,
                     "accessibility": AXIsProcessTrusted(),
                     "hidTap": self.hidTapActive,
                     "sessionTap": self.sessionTapActive,
+                    "identityPersistent": self.identityPersistent,
+                    "keychainError": self.keychainErrorStatus.map(Int.init) ?? 0,
                     "localSource": cur?.id ?? "",
                     "localLang": cur?.language.rawValue ?? "unknown",
                     "triggers": self.activeTriggers.map(\.label),
@@ -556,6 +602,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return ["ok": true, "peers": list]
             case "pair-export":
+                guard self.identityPersistent else {
+                    return [
+                        "ok": false,
+                        "error": "keychain access denied (status \(self.keychainErrorStatus ?? 0)); click '키체인 다시 읽기' in TailIME to unlock persistent identity",
+                    ]
+                }
                 let ip = self.remoteCoordinator.currentTailscaleSnapshot.selfNode?.ipv4
                 if let token = self.identity.exportPairingToken(
                     hostName: self.remoteCoordinator.hostDisplayName,
@@ -572,6 +624,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 return ["ok": true, "peer": rec.name, "deviceID": rec.deviceID]
             case "remote-set":
+                guard self.identityPersistent else {
+                    return ["ok": false, "error": "keychain access denied; unlock persistent identity first"]
+                }
                 guard let targetIP = req["ip"] as? String,
                       let langStr = req["lang"] as? String,
                       let lang = InputLanguage(rawValue: langStr) else {
@@ -639,6 +694,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             enabled: settings.enabled,
             paused: paused,
             accessibilityGranted: AXIsProcessTrusted(),
+            keychainErrorStatus: keychainErrorStatus,
             secureInputAppName: secureInputAppName,
             conflictingApps: conflicts,
             remoteContext: remoteCtx,
@@ -678,13 +734,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let diag = DiagnosticsSummary(
-            version: "1.0.1",
+            version: "1.0.2",
             enabled: settings.enabled,
             paused: paused,
             hidTapActive: hidTapActive,
             sessionTapActive: sessionTapActive,
             accessibilityGranted: AXIsProcessTrusted(),
             postEventAccessGranted: CGPreflightPostEventAccess(),
+            keychainErrorStatus: keychainErrorStatus,
             textInputSwitcherRunning: localEngine.switcherWaker.isRunning,
             secureInputAppName: secureInputAppName,
             conflictingApps: conflicts,

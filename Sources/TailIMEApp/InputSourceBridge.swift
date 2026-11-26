@@ -72,6 +72,7 @@ final class InputSwitcherWaker {
 /// without updating the focused app's input context.
 enum TSMDirectBridge {
     private static let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
+    private static let ipcQueue = DispatchQueue(label: "com.tailime.tsm-direct", qos: .userInteractive)
 
     private typealias KeyFocusFn = @convention(c) (
         UnsafeMutablePointer<ProcessSerialNumber>,
@@ -91,46 +92,42 @@ enum TSMDirectBridge {
         dlsym(rtldDefault, name).map { unsafeBitCast($0, to: T.self) }
     }
 
-    private static func keyFocusPID() -> pid_t? {
-        guard let keyFocus = sym("CPSGetKeyFocusProcess", KeyFocusFn.self),
-              let psnToPID = sym("GetProcessPID", PSNToPIDFn.self) else {
-            return nil
+    private static func candidateFocusPIDs() -> [pid_t] {
+        var pids: [pid_t] = []
+        if let keyFocus = sym("CPSGetKeyFocusProcess", KeyFocusFn.self),
+           let psnToPID = sym("GetProcessPID", PSNToPIDFn.self) {
+            var psn = ProcessSerialNumber()
+            var ignored: DarwinBoolean = false
+            var pid: pid_t = -1
+            if keyFocus(&psn, &ignored) == 0, psnToPID(&psn, &pid) == noErr, pid > 0 {
+                pids.append(pid)
+            }
         }
-        var psn = ProcessSerialNumber()
-        var ignored: DarwinBoolean = false
-        var pid: pid_t = -1
-        guard keyFocus(&psn, &ignored) == 0,
-              psnToPID(&psn, &pid) == noErr,
-              pid > 0 else {
-            return nil
+        // Fallback / complement: if CPSGetKeyFocusProcess failed or returned a floating helper
+        // (e.g. RustDesk --cm) while an Electron/AppKit app is actually frontmost, include frontmostApplication PID!
+        if let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier,
+           frontPID > 0,
+           !pids.contains(frontPID) {
+            pids.append(frontPID)
         }
-        return pid
+        return pids
     }
 
-    /// Asks the currently key-focused app to switch directly to `source` via its TSM port.
-    /// Returns false if private symbols are unavailable or the app does not reply cleanly.
-    static func selectInFocusedApp(_ source: TISInputSource) -> Bool {
-        guard let remotePort = sym("CFMessagePortCreatePerProcessRemote", RemotePortFn.self),
-              let flatten = sym("_CreateFlattenedInputSource", FlattenFn.self),
-              let pid = keyFocusPID() else {
+    /// Returns true when `CPSGetKeyFocusProcess` and `NSWorkspace.shared.frontmostApplication`
+    /// report different PIDs (e.g. a floating `RustDesk --cm` connection bar over a frontmost
+    /// Electron/Chromium app), which can cause `TextInputSwitcher` to log
+    /// `target app and typing focus mismatch` and skip activating `KIM_Extension`.
+    static func hasFocusMismatch() -> Bool {
+        candidateFocusPIDs().count > 1
+    }
+
+    private static func sendSelectRequest(_ data: CFData, toPID pid: pid_t, remotePort: RemotePortFn) -> Bool {
+        guard let port = remotePort(nil, "com.apple.tsm.portname" as CFString, pid)?.takeRetainedValue() else {
             return false
         }
-
-        var flatRef: Unmanaged<AnyObject>?
-        guard flatten(source, &flatRef).boolValue,
-              let flat = flatRef?.takeRetainedValue() else {
-            return false
-        }
-
-        let request = ["tsmInputSourceSelectedInpSrcKey": flat] as CFDictionary
-        guard let data = CFPropertyListCreateData(nil, request, .xmlFormat_v1_0, 0, nil)?.takeRetainedValue(),
-              let port = remotePort(nil, "com.apple.tsm.portname" as CFString, pid)?.takeRetainedValue() else {
-            return false
-        }
-
         var reply: Unmanaged<CFData>?
         let status = CFMessagePortSendRequest(
-            port, 7, data, 0.12, 0.12, CFRunLoopMode.defaultMode.rawValue, &reply
+            port, 7, data, 0.04, 0.04, CFRunLoopMode.defaultMode.rawValue, &reply
         )
         guard status == kCFMessagePortSuccess else { return false }
 
@@ -141,6 +138,57 @@ enum TSMDirectBridge {
             return false
         }
         return true
+    }
+
+    /// Asynchronously asks the currently focused app(s) to switch directly to `source` via `com.apple.tsm.portname`.
+    /// All Carbon/AppKit work (`TISInputSource`, `_CreateFlattenedInputSource`, `NSWorkspace`) executes on the
+    /// calling main thread, while the `CFMessagePortSendRequest` IPC runs off-main on a `.userInteractive` serial
+    /// queue with a tight 40ms timeout per PID. `isCurrent` is polled before each per-PID send so superseded
+    /// switches abort immediately instead of inverting a newer switch request.
+    static func selectInFocusedAppAsync(
+        _ source: TISInputSource,
+        isCurrent: @escaping @Sendable () -> Bool,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard let remotePort = sym("CFMessagePortCreatePerProcessRemote", RemotePortFn.self),
+              let flatten = sym("_CreateFlattenedInputSource", FlattenFn.self) else {
+            completion(false)
+            return
+        }
+
+        let targetPIDs = candidateFocusPIDs()
+        guard !targetPIDs.isEmpty else {
+            completion(false)
+            return
+        }
+
+        var flatRef: Unmanaged<AnyObject>?
+        guard flatten(source, &flatRef).boolValue,
+              let flat = flatRef?.takeRetainedValue() else {
+            completion(false)
+            return
+        }
+
+        let request = ["tsmInputSourceSelectedInpSrcKey": flat] as CFDictionary
+        guard let cfData = CFPropertyListCreateData(nil, request, .xmlFormat_v1_0, 0, nil)?.takeRetainedValue() else {
+            completion(false)
+            return
+        }
+        let payload = cfData as Data
+
+        ipcQueue.async {
+            let bridged = payload as CFData
+            var anySucceeded = false
+            for pid in targetPIDs {
+                guard isCurrent() else { break }
+                if sendSelectRequest(bridged, toPID: pid, remotePort: remotePort) {
+                    anySucceeded = true
+                }
+            }
+            DispatchQueue.main.async {
+                completion(anySucceeded)
+            }
+        }
     }
 }
 
@@ -169,7 +217,7 @@ final class LocalSwitchEngine {
     private var lastEnglishSourceID: String?
     private var pendingVerificationWork: DispatchWorkItem?
     private var pendingSwitchCompletion: (gen: UInt64, targetLang: InputLanguage?, completion: ((InputSourceInfo?) -> Void)?)?
-    private var switchGeneration: UInt64 = 0
+    private let generationTracker = SwitchGenerationTracker()
 
     var onInputSourceChanged: ((InputSourceInfo) -> Void)?
 
@@ -203,7 +251,7 @@ final class LocalSwitchEngine {
         guard let info = currentInputSource() else { return }
         rememberSource(info)
         if let pending = pendingSwitchCompletion,
-           pending.gen == switchGeneration,
+           generationTracker.isCurrent(pending.gen),
            (pending.targetLang == nil || info.language == pending.targetLang) {
             pendingSwitchCompletion = nil
             pendingVerificationWork?.cancel()
@@ -249,8 +297,7 @@ final class LocalSwitchEngine {
     /// Preserves macOS's exact native "previous input source" semantics when 3+ input sources are enabled
     /// and the user pressed their native macOS Symbolic Hotkey 60 locally — just firing on keyDown instead of keyUp!
     func pulseNativePreviousSource(completion: ((InputSourceInfo?) -> Void)? = nil) {
-        switchGeneration &+= 1
-        let gen = switchGeneration
+        let gen = generationTracker.advance()
         pendingVerificationWork?.cancel()
         pendingVerificationWork = nil
         pendingSwitchCompletion = nil
@@ -265,7 +312,7 @@ final class LocalSwitchEngine {
         pendingSwitchCompletion = (gen, nil, completion)
         _ = postSyntheticHotkeyPulse(hotkey)
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.switchGeneration == gen else { return }
+            guard let self, self.generationTracker.isCurrent(gen) else { return }
             let done = self.pendingSwitchCompletion?.completion
             self.pendingSwitchCompletion = nil
             done?(self.currentInputSource())
@@ -283,14 +330,14 @@ final class LocalSwitchEngine {
         completion: ((InputSourceInfo?) -> Void)? = nil
     ) {
         // Always invalidate any earlier in-flight verification first so rapid toggling never reverts!
-        switchGeneration &+= 1
-        let gen = switchGeneration
+        let gen = generationTracker.advance()
         pendingVerificationWork?.cancel()
         pendingVerificationWork = nil
         pendingSwitchCompletion = nil
 
         let current = currentInputSource()
-        if let current, current.language == targetLang {
+        let hadInFlightDirect = generationTracker.hasInFlightDirectSwitch
+        if let current, generationTracker.canShortCircuitAlreadyAtTarget(current.language == targetLang) {
             completion?(current)
             return
         }
@@ -301,7 +348,14 @@ final class LocalSwitchEngine {
         }
 
         let enabledList = selectableKeyboardTISSources()
+        // When key-focus PID differs from frontmostApplication PID (e.g., floating RustDesk --cm over Electron),
+        // TextInputSwitcher can hit "target app and typing focus mismatch" and fail to activate KIM_Extension.
+        // Also when an earlier direct TSM IPC is still in-flight, NEVER use a relative toggle pulse — queue a
+        // deterministic absolute TSM switch behind it on the same serial queue so final state matches latest request!
+        let focusMismatchForKorean = (targetLang == .korean) && TSMDirectBridge.hasFocusMismatch()
         let useFastPulse = allowHotkeyPulse
+            && !hadInFlightDirect
+            && !focusMismatchForKorean
             && enabledList.count == 2
             && hotkeysSnapshot.preferredPulseHotkey != nil
 
@@ -313,9 +367,10 @@ final class LocalSwitchEngine {
             pendingSwitchCompletion = (gen, targetLang, completion)
             if postSyntheticHotkeyPulse(hotkey) {
                 // Fast path completes immediately inside handleSystemInputSourceNotification (~2-5ms).
-                // Fallback verification runs after 55ms only if macOS dropped the pulse.
+                // Allow 150ms for TextInputSwitcher wake cycles (measured ~100ms on cold wake in macOS 26)
+                // before falling back to TSMDirectBridge / TISSelectInputSource so we never collide mid-switch!
                 let verify = DispatchWorkItem { [weak self] in
-                    guard let self, self.switchGeneration == gen else { return }
+                    guard let self, self.generationTracker.isCurrent(gen) else { return }
                     let done = self.pendingSwitchCompletion?.completion
                     self.pendingSwitchCompletion = nil
                     let nowInfo = self.currentInputSource()
@@ -323,58 +378,94 @@ final class LocalSwitchEngine {
                         done?(nowInfo)
                         return
                     }
-                    self.selectDirectly(targetTIS)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.015) { [weak self] in
-                        done?(self?.currentInputSource())
+                    self.selectDirectly(targetTIS, expectedGeneration: gen) { [weak self] in
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.015) { [weak self] in
+                            guard let self, self.generationTracker.isCurrent(gen) else { return }
+                            done?(self.currentInputSource())
+                        }
                     }
                 }
                 pendingVerificationWork = verify
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.055, execute: verify)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.150, execute: verify)
                 return
             }
             pendingSwitchCompletion = nil
         }
 
-        // Direct path (used when remote viewer is focused for Auto-ABC, >2 input sources, or hotkey 60/61 disabled)
+        // Direct path (used when remote viewer is focused for Auto-ABC, >2 input sources, hotkey 60/61 disabled,
+        // an earlier direct TSM IPC is in-flight, or Korean activation encounters a key-focus vs frontmost-app PID mismatch)
         pendingSwitchCompletion = (gen, targetLang, completion)
-        selectDirectly(targetTIS)
-        let directFallback = DispatchWorkItem { [weak self] in
-            guard let self, self.switchGeneration == gen else { return }
+
+        let finishDirectVerification: () -> Void = { [weak self] in
+            guard let self, self.generationTracker.isCurrent(gen), self.pendingSwitchCompletion != nil else { return }
             let done = self.pendingSwitchCompletion?.completion
             self.pendingSwitchCompletion = nil
-            done?(self.currentInputSource())
+            self.pendingVerificationWork?.cancel()
+            self.pendingVerificationWork = nil
+            let nowInfo = self.currentInputSource()
+            if nowInfo?.language != targetLang {
+                _ = TISSelectInputSource(targetTIS)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.015) { [weak self] in
+                    guard let self, self.generationTracker.isCurrent(gen) else { return }
+                    done?(self.currentInputSource())
+                }
+                return
+            }
+            done?(nowInfo)
         }
-        pendingVerificationWork = directFallback
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: directFallback)
+
+        // Bounded 80ms hard-cap timer guarantees completion even if a hung helper stalls the off-main TSM IPC queue.
+        let hardCap = DispatchWorkItem(block: finishDirectVerification)
+        pendingVerificationWork = hardCap
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.080, execute: hardCap)
+
+        selectDirectly(targetTIS, expectedGeneration: gen) { [weak self] in
+            guard let self, self.generationTracker.isCurrent(gen), self.pendingSwitchCompletion != nil else { return }
+            // Healthy TSM IPC completed quickly (<1ms) -> replace 80ms hard cap with tight 25ms verification check.
+            self.pendingVerificationWork?.cancel()
+            let directFallback = DispatchWorkItem(block: finishDirectVerification)
+            self.pendingVerificationWork = directFallback
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025, execute: directFallback)
+        }
     }
 
     /// Switches directly to a specific input source ID (used when restoring a saved local input source).
     func switchToSourceID(_ sourceID: String, allowHotkeyPulse: Bool = false) {
-        switchGeneration &+= 1
+        let gen = generationTracker.advance()
         pendingVerificationWork?.cancel()
         pendingVerificationWork = nil
         pendingSwitchCompletion = nil
 
-        if currentInputSource()?.id == sourceID { return }
+        let hadInFlightDirect = generationTracker.hasInFlightDirectSwitch
+        if generationTracker.canShortCircuitAlreadyAtTarget(currentInputSource()?.id == sourceID) {
+            return
+        }
         let list = selectableKeyboardTISSources()
         guard let target = list.first(where: { stringProperty($0, kTISPropertyInputSourceID) == sourceID }) else { return }
-        if allowHotkeyPulse, list.count == 2, let hotkey = hotkeysSnapshot.preferredPulseHotkey {
+        if allowHotkeyPulse, !hadInFlightDirect, list.count == 2, let hotkey = hotkeysSnapshot.preferredPulseHotkey {
             _ = postSyntheticHotkeyPulse(hotkey)
             return
         }
-        selectDirectly(target)
+        selectDirectly(target, expectedGeneration: gen)
     }
 
-    private func selectDirectly(_ source: TISInputSource) {
-        // First try TSMDirectBridge (macism trick — reliably activates Korean 2-Set in focused app)
-        if !TSMDirectBridge.selectInFocusedApp(source) {
-            _ = TISSelectInputSource(source)
-        } else {
-            // Also mirror via TISSelectInputSource for plain layouts if needed so menu bar stays in sync
-            let info = describe(source)
-            if info?.isKeyboardLayout == true {
+    private func selectDirectly(
+        _ source: TISInputSource,
+        expectedGeneration gen: UInt64,
+        completion: (() -> Void)? = nil
+    ) {
+        let isKeyboardLayout = (describe(source)?.isKeyboardLayout == true)
+        let tracker = generationTracker
+        tracker.beginInFlightDirectSwitch()
+        // First try TSMDirectBridge off-main (macism trick — reliably activates Korean 2-Set in focused app(s))
+        TSMDirectBridge.selectInFocusedAppAsync(source, isCurrent: { tracker.isCurrent(gen) }) { [weak self] succeeded in
+            defer { tracker.endInFlightDirectSwitch() }
+            guard self != nil, tracker.isCurrent(gen) else { return }
+            if !succeeded || isKeyboardLayout {
+                // Fall back to TISSelectInputSource on failure, or mirror plain keyboard layouts so menu bar stays in sync
                 _ = TISSelectInputSource(source)
             }
+            completion?()
         }
     }
 

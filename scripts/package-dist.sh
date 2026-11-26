@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-VERSION="${TAILIME_VERSION:-1.0.1}"
+VERSION="${TAILIME_VERSION:-1.0.2}"
 OUT_DIR="${TAILIME_OUT_DIR:-$ROOT_DIR/dist}"
 ZIP_PATH="$OUT_DIR/TailIME-${VERSION}-macos.zip"
 

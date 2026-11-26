@@ -9,7 +9,7 @@
 [![Runtime](https://img.shields.io/badge/runtime-native%20Swift%20%2B%20AppKit-orange)](#architecture)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero%20external%20packages-brightgreen)](#build-from-source)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Download](https://img.shields.io/badge/Download-TailIME--1.0.1--macos.zip-0071e3)](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip)
+[![Download](https://img.shields.io/badge/Download-TailIME--1.0.2--macos.zip-0071e3)](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip)
 
 ---
 
@@ -26,11 +26,11 @@ Install `TailIME.app` on both Macs, pair in 10 seconds with a 6-digit SAS code, 
 
 Download the Universal (`arm64` + `x86_64`) package from GitHub Releases:
 
-- **[TailIME-1.0.1-macos.zip](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip.sha256))
+- **[TailIME-1.0.2-macos.zip](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip.sha256))
 
 ```bash
-unzip TailIME-1.0.1-macos.zip
-cd TailIME-1.0.1
+unzip TailIME-1.0.2-macos.zip
+cd TailIME-1.0.2
 ./install.sh --link-cli
 ```
 
@@ -97,7 +97,7 @@ flowchart LR
 
 ### 1. Install on Both Macs
 
-Install [TailIME-1.0.1-macos.zip](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip) on both your controller Mac (e.g. MacBook Air/Pro) and your remote Mac (e.g. Mac Pro / Mac Studio / Mac mini):
+Install [TailIME-1.0.2-macos.zip](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip) on both your controller Mac (e.g. MacBook Air/Pro) and your remote Mac (e.g. Mac Pro / Mac Studio / Mac mini):
 
 ```bash
 ./install.sh --link-cli
@@ -172,7 +172,7 @@ tailime-ctl quit                            # Quit TailIME cleanly
 ### 2. Pressing the switch key triggers unexpected shortcuts (window maximize, Dock focus, etc.)
 - **Update both Macs to `v1.0.1` or later:** `v1.0.1` eliminates synthetic `maskSecondaryFn` (`Fn/Globe`) modifier latching on `keyUp` and uses **Tailscale UDP Direct** by default (never injecting synthetic `F16`/`F17`/`F20` keys into RustDesk, whose `rdev`/`enigo` macOS keycode translation can mis-map extended F-keys).
 - **Recommended transport setting for RustDesk:** Keep **Settings → 원격 Tailscale → 전송 방식** set to **Tailscale UDP 직접 전송 (권장 · RustDesk 안전)**.
-- **If `Fn/Globe` was stuck from `v1.0.0`:** Tap the physical `Fn (Globe)` key once on each Mac, then update to `v1.0.1`.
+- **If `Fn/Globe` was stuck from `v1.0.0`:** Tap the physical `Fn (Globe)` key once on each Mac, then update to `v1.0.1` or later.
 
 ### 3. Custom switch keys (`Left/Right Control`, `Ctrl+Space`, `Cmd+Space`, `Shift+Space`, `Caps Lock`, Karabiner `to_if_alone`) are not detected
 - Open **Settings → 한영키** and either pick a preset (supports all left/right `Control`, `Option`, `Command`, `Shift` standalone taps and `*+Space` combos) or click **한영키 직접 녹화...** to capture your exact key.
@@ -180,18 +180,21 @@ tailime-ctl quit                            # Quit TailIME cleanly
 - **Secure Input active:** When a password field (`sudo` in Terminal, 1Password, login prompt) enables macOS Secure Input, macOS blocks all event taps by design. TailIME displays the blocking app in the menu bar and **Diagnostics** tab — close that prompt to resume automatically.
 
 ### 4. Pairing drops or Accessibility stops working after updating / rebuilding
-- **Keychain prompt on ad-hoc upgrade:** Because ad-hoc builds (`codesign --sign -`) change their code signature hash on update, macOS Keychain prompts to allow access to the stored `com.tailime.app.identity` key. Click **Always Allow**. If that prompt is cancelled or denied, TailIME cannot read the existing key and creates a new Curve25519 key (or falls back to an in-memory ephemeral key if Keychain save also fails, which resets on restart) — resulting in a key mismatch where packets between the two Macs fail HMAC verification (`daemonReachable: false`). To recover, allow Keychain access, click **신뢰 기기 초기화** on both Macs under **Settings → 원격 Tailscale** *(note: this clears the entire trusted-peer list, so any other paired Macs will also need to be re-paired)*, and re-exchange pairing tokens or re-pair via 6-digit SAS.
+- **Keychain prompt on ad-hoc upgrade:** Because ad-hoc builds (`codesign --sign -`) change their code signature hash on update, macOS Keychain prompts to allow access to the stored `com.tailime.app.identity` key. Click **Always Allow**.
+  - **On `v1.0.2` and later:** If you accidentally cancel or deny that prompt, TailIME **never overwrites** your stored Keychain key. Instead, it displays a warning banner in the menu bar and **Settings → 일반** (`identityPersistent: false` in `tailime-ctl status`) and pauses pairing/HMAC traffic until you click **키체인 다시 읽기** and choose **Always Allow** — restoring all existing pairings without re-pairing.
+  - **If upgrading from `< v1.0.2` after a key rotation:** Earlier builds rotated the key on Keychain denial, leaving a key mismatch (`daemonReachable: false`). To recover, allow Keychain access, click **신뢰 기기 초기화** on both Macs under **Settings → 원격 Tailscale** *(note: this clears the entire trusted-peer list, so any other paired Macs will also need to be re-paired)*, and re-exchange pairing tokens or re-pair via 6-digit SAS.
 - **Accessibility TCC cache:** Even if the toggle appears ON after replacing an ad-hoc build, macOS TCC may keep the old signature hash. Open **System Settings → Privacy & Security → Accessibility**, select `TailIME`, click **`-`** to remove it, then click **`+`** to re-add `/Applications/TailIME.app`.
 - **Reducing permission resets across rebuilds:** Run `./scripts/setup-local-cert.sh` once and build with `CODESIGN_IDENTITY="TailIME Local Signing" ./scripts/package-dist.sh`. Signing with a persistent local certificate helps preserve Keychain ACL and Accessibility grants across future updates once granted to the signed build.
 
 ### 5. Korean characters split into uncomposed Jamo (`ㄹㅣㄷㅡㅁㅣㅇㅔ`) on the remote Mac
 - **macOS `KoreanIM` (`KIM_Extension`) focus mismatch (seen in Electron / Chromium apps):** macOS 2-Set Korean combines a keyboard layout (`2SetHangul`) with the `KoreanIM` composition server (`KIM_Extension`). If a floating window on the remote Mac (such as RustDesk's incoming connection bar `RustDesk --cm`) briefly takes key focus during a language switch, `TextInputSwitcher` can hit a `target app and typing focus mismatch` — leaving the target Electron/Chromium app (VS Code, Antigravity, Slack, Chrome) on raw `2SetHangul` without `KIM_Extension` attached.
-  - **Quick recovery:** Try pressing `Cmd+Tab` away and back (or clicking another window and back into the text box), or toggling Korean/English once to re-attach `KIM_Extension`. Minimizing RustDesk's floating incoming-connection window (`--cm`) on the remote Mac can also help reduce focus conflicts.
+  - **Built-in mitigation (`v1.0.2+`):** When `CPSGetKeyFocusProcess` and `frontmostApplication` PIDs differ during Korean activation, `TailIME` routes directly through `TSMDirectBridge` off the main thread to both candidate PIDs (with a 25ms TIS verification check); on the standard hotkey-pulse path, the fallback verification window is raised to 150ms to accommodate cold `TextInputSwitcher` wakeups.
+  - **Quick recovery:** If an existing session is already stuck on uncomposed Jamo, try pressing `Cmd+Tab` away and back (or clicking another window and back into the text box), or toggling Korean/English once to re-attach `KIM_Extension`. Minimizing RustDesk's floating incoming-connection window (`--cm`) on the remote Mac can also help reduce focus conflicts.
 - **RustDesk keyboard mode:** In **Translate mode**, RustDesk may inject characters via `CGEventKeyboardSetUnicodeString`, which can bypass macOS `KoreanIM` syllable composition. Switch RustDesk's toolbar keyboard icon to **Map mode** (and if needed, try toggling macOS **Input Source 1 / 2** in the same menu) while keeping TailIME's **Auto-English (ABC) lock on remote focus** enabled.
 
 ### 6. Fast 10-Second Diagnostic Checklist
 ```bash
-tailime-ctl status   # Verify accessibility, hidTap, sessionTap, triggers, conflictingApps, remoteFocused
+tailime-ctl status   # Verify accessibility, hidTap, sessionTap, identityPersistent, triggers, conflictingApps, remoteFocused
 tailime-ctl peers    # Verify Tailscale peer online, direct path, and daemonReachable
 ```
 Or open **Menu Bar → 진단 및 실시간 키 테스트...** to inspect live keyCodes/modifier flags (displayed transiently in-memory only; never written to disk) and copy a sanitized diagnostic summary.
@@ -206,14 +209,14 @@ Requires only macOS 13+ and Xcode Command Line Tools (`xcode-select --install`) 
 git clone https://github.com/wmyung/tailime.git
 cd tailime
 
-# Run all 22 unit & live macOS loopback/CSystemBridge tests
+# Run all 24 unit & live macOS loopback/CSystemBridge tests
 swift run tailime-test
 
 # Build Universal (arm64 + x86_64) TailIME.app + distribution zip
 ./scripts/package-dist.sh
 ```
 
-Outputs are written to `dist/TailIME.app` and `dist/TailIME-1.0.1-macos.zip`.
+Outputs are written to `dist/TailIME.app` and `dist/TailIME-1.0.2-macos.zip`.
 
 ---
 
