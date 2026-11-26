@@ -78,6 +78,18 @@ runTest("Curve25519 ECDH derives identical per-peer HMAC keys and 6-digit SAS") 
 
     let keyAC = try unwrap(macA.derivePeerHMACKey(peerPublicKeyBase64: macC.publicKeyBase64))
     try expect(keyAB != keyAC, "Different peer must have distinct HMAC key")
+
+    // Cross-OS macOS Swift (CryptoKit) <-> Windows Go (crypto/ecdh + crypto/hkdf) deterministic golden vector test!
+    let rawA = Data((0..<32).map { UInt8(0x01 + $0) })
+    let rawB = Data((0..<32).map { UInt8(0x21 + $0) })
+    let detA = CryptoIdentity(privateKey: try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: rawA))
+    let detB = CryptoIdentity(privateKey: try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: rawB))
+    try expectEqual(detA.deviceID, "aaa8fff703b50b2297f4f6e13508f724")
+    try expectEqual(detB.deviceID, "4457134794559182226754e9dd2f1083")
+    try expectEqual(try unwrap(detA.confirmationCode(peerPublicKeyBase64: detB.publicKeyBase64)), "847-839")
+    let detKey = try unwrap(detA.derivePeerHMACKey(peerPublicKeyBase64: detB.publicKeyBase64))
+    let detHex = detKey.withUnsafeBytes { $0.map { String(format: "%02x", $0) }.joined() }
+    try expectEqual(detHex, "6f351c0e9ccf5b46d5103e9a2cb40eba54edadfc128222dfc946c0fda59ec617")
 }
 
 runTest("Pairing token round-trip succeeds and rejects tampered tokens") {
@@ -733,9 +745,39 @@ runTest("Tailscale JSON parsing and IPv4/IPv6/interface validation") {
     }
     """
     let snapshot = try unwrap(TailscaleDiscovery.parseStatusJSON(Data(json.utf8)))
+    try expectEqual(snapshot.fromCLI, true)
     try expectEqual(snapshot.selfNode?.ipv4, "100.64.0.20")
     try expectEqual(snapshot.peers.first?.hostName, "mac-desk")
     try expectEqual(snapshot.peers.first?.isDirectPath, true)
+    try expectEqual(snapshot.macPeers.count, 1)
+    try expectEqual(snapshot.desktopPeers.count, 2)
+    try expect(snapshot.desktopPeers.contains(where: { $0.isWindows && $0.hostName == "WIN-DESKTOP" }))
+
+    // Zero-CLI fallback (e.g. sandboxed Mac App Store Tailscale): enrichSnapshot must populate selfNode & trustedPeers without falsely assuming macOS!
+    let dummyPeer = CryptoIdentity.generateEphemeral()
+    let winPeerID = CryptoIdentity.generateEphemeral()
+    let trusted = [
+        TrustedPeerRecord(deviceID: dummyPeer.deviceID, name: "legacy-peer", publicKeyBase64: dummyPeer.publicKeyBase64, lastKnownIP: "100.64.0.10"),
+        TrustedPeerRecord(deviceID: winPeerID.deviceID, name: "win-box", publicKeyBase64: winPeerID.publicKeyBase64, lastKnownIP: "100.64.0.30", os: "windows"),
+    ]
+    let enriched = TailscaleDiscovery.enrichSnapshot(
+        nil,
+        localIPs: (ipv4: "100.64.0.99", ipv6: "fd7a:115c:a1e0::99"),
+        hostName: "mac-air",
+        trustedPeers: trusted
+    )
+    try expectEqual(enriched.fromCLI, false)
+    try expectEqual(enriched.selfNode?.ipv4, "100.64.0.99")
+    try expectEqual(enriched.selfNode?.ipv6, "fd7a:115c:a1e0::99")
+    try expectEqual(enriched.desktopPeers.count, 2)
+    let legacyPeer = try unwrap(enriched.peer(matchingIP: "100.64.0.10"))
+    try expectEqual(legacyPeer.hostName, "legacy-peer")
+    try expectEqual(legacyPeer.os, "unknown")
+    try expectEqual(legacyPeer.isMacOS, false)
+    try expectEqual(legacyPeer.osShortLabel, "TailIME")
+    let winEnriched = try unwrap(enriched.peer(matchingIP: "100.64.0.30"))
+    try expectEqual(winEnriched.isWindows, true)
+    try expectEqual(winEnriched.isMacOS, false)
 
     try expect(TailscaleIPValidator.isTailscaleIPv4("100.64.0.10"))
     try expect(TailscaleIPValidator.isTailscaleIPv4("100.64.0.1"))
@@ -802,6 +844,20 @@ runTest("Four-tier remote target resolver and safe fallback policy") {
     )
     try expectEqual(lobbyCtx.isLobbyWindow, true)
     try expectEqual(lobbyCtx.hasActiveRemoteSession, false)
+
+    let winAppLobby = RemoteTargetResolver.resolve(
+        bundleID: "com.microsoft.rdc.macos", frontmostPID: 101, windowTitle: "Windows App",
+        activeClientSocketIPs: [], snapshot: snapshot, settings: settings
+    )
+    try expectEqual(winAppLobby.isLobbyWindow, true)
+    try expectEqual(winAppLobby.hasActiveRemoteSession, false)
+
+    let winAppSession = RemoteTargetResolver.resolve(
+        bundleID: "com.microsoft.rdc.macos", frontmostPID: 101, windowTitle: "WIN-DESKTOP",
+        activeClientSocketIPs: ["100.64.0.30"], snapshot: snapshot, settings: settings
+    )
+    try expectEqual(winAppSession.hasActiveRemoteSession, true)
+    try expectEqual(winAppSession.resolvedPeer?.hostName, "WIN-DESKTOP")
 
     let socketCtx = RemoteTargetResolver.resolve(
         bundleID: "com.carriez.rustdesk", frontmostPID: 100, windowTitle: "123456789",

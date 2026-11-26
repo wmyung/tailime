@@ -102,13 +102,25 @@ final class SettingsStore {
         onTrustedPeersChanged?(list)
     }
 
-    func updateTrustedPeerIP(deviceID: String, ip: String) {
+    func updateTrustedPeerIP(deviceID: String, ip: String, os: String? = nil) {
         lock.lock()
-        guard var existing = _trustedPeers[deviceID], existing.lastKnownIP != ip else {
+        guard var existing = _trustedPeers[deviceID] else {
             lock.unlock()
             return
         }
-        existing.lastKnownIP = ip
+        var changed = false
+        if !ip.isEmpty && existing.lastKnownIP != ip {
+            existing.lastKnownIP = ip
+            changed = true
+        }
+        if let os, !os.isEmpty, os.lowercased() != "unknown", existing.os != os {
+            existing.os = os
+            changed = true
+        }
+        guard changed else {
+            lock.unlock()
+            return
+        }
         _trustedPeers[deviceID] = existing
         let list = Array(_trustedPeers.values)
         if let data = try? JSONEncoder().encode(list) {

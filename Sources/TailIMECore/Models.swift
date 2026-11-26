@@ -205,6 +205,18 @@ public struct TailscalePeer: Codable, Hashable, Sendable, Identifiable {
         os.lowercased() == "windows"
     }
 
+    public var isTailIMESupportedOS: Bool {
+        let lower = os.lowercased()
+        return isMacOS || isWindows || lower == "unknown"
+    }
+
+    public var osShortLabel: String {
+        if isMacOS { return "macOS" }
+        if isWindows { return "Windows" }
+        if os.isEmpty || os.lowercased() == "unknown" { return "TailIME" }
+        return os
+    }
+
     public var isDirectPath: Bool {
         !directAddr.isEmpty
     }
@@ -225,6 +237,7 @@ public struct TrustedPeerRecord: Codable, Hashable, Sendable, Identifiable {
     public var name: String
     public var publicKeyBase64: String
     public var lastKnownIP: String?
+    public var os: String?
     public var pairedAt: Date
 
     public init(
@@ -232,12 +245,14 @@ public struct TrustedPeerRecord: Codable, Hashable, Sendable, Identifiable {
         name: String,
         publicKeyBase64: String,
         lastKnownIP: String?,
+        os: String? = nil,
         pairedAt: Date = Date()
     ) {
         self.deviceID = deviceID
         self.name = name
         self.publicKeyBase64 = publicKeyBase64
         self.lastKnownIP = lastKnownIP
+        self.os = os
         self.pairedAt = pairedAt
     }
 }
@@ -291,6 +306,7 @@ public enum RemoteViewerCatalog {
         "com.nomachine",
         "com.philandro.anydesk",
         "com.microsoft.rdc",
+        "com.microsoft.windowsapp",
         "com.teamviewer.TeamViewer",
         "com.splashtop",
     ]

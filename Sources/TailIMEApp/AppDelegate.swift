@@ -15,7 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var identity: CryptoIdentity = CryptoIdentity.generateEphemeral()
     private var identityPersistent = false
+    private var keychainLoading = false
     private var keychainErrorStatus: OSStatus?
+    private let keychainQueue = DispatchQueue(label: "com.tailime.keychain", qos: .userInitiated)
     private lazy var localEngine = LocalSwitchEngine(syntheticMarker: syntheticMarker)
     private lazy var tapController = EventTapController(syntheticMarker: syntheticMarker)
     private lazy var udpEndpoint = TailscaleUDPEndpoint(port: settingsStore.settings.udpPort)
@@ -55,9 +57,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Load persistent Curve25519 identity from Keychain (non-destructive if ACL is denied/cancelled).
-        loadKeychainIdentity(notifyCoordinator: false)
-
         setupSignalHandlers()
         wireEverything()
 
@@ -65,10 +64,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         localEngine.startObservingInputSourceNotifications()
         reloadTriggersAndKarabiner()
 
+        // Start local CLI IPC server, event taps, and UI BEFORE touching Keychain so a hidden macOS
+        // Keychain authorization prompt on ad-hoc upgrade can NEVER block app startup or tailime-ctl!
         startLocalControlServer()
         udpEndpoint.start()
         sessionWatcher.start()
-        refreshTailscaleAsync(probePaired: true)
+        refreshTailscaleAsync(probePaired: false)
 
         if AXIsProcessTrusted() {
             tapController.start()
@@ -78,6 +79,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startTimers()
         reconcileHIDRemapper()
         refreshAllUI()
+
+        // Load persistent Curve25519 identity from Keychain asynchronously (non-destructive if ACL is denied/cancelled).
+        loadKeychainIdentityAsync(activateForPrompt: false)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -198,6 +202,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         remoteCoordinator.onRemoteSwitchedHUD = { [weak self] host, lang, rtt, isFallback in
             self?.hudController.showRemoteSwitch(hostName: host, language: lang, rttMs: rtt, isFallback: isFallback)
         }
+        remoteCoordinator.onRemoteSwitchFailedHUD = { [weak self] host, detail in
+            self?.hudController.showRemoteFailure(hostName: host, detail: detail)
+        }
 
         // Menu Bar callbacks
         statusBarController.onToggleLocalLanguage = { [weak self] in
@@ -220,7 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.requestAccessibilityPermission()
         }
         statusBarController.onRetryKeychain = { [weak self] in
-            self?.loadKeychainIdentity(notifyCoordinator: true)
+            self?.loadKeychainIdentityAsync(activateForPrompt: true)
         }
         statusBarController.onRefreshTailscale = { [weak self] in
             self?.refreshTailscaleAsync(probePaired: true)
@@ -252,18 +259,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.requestAccessibilityPermission()
         }
         settingsWindow.onRetryKeychain = { [weak self] in
-            self?.loadKeychainIdentity(notifyCoordinator: true)
+            self?.loadKeychainIdentityAsync(activateForPrompt: true)
         }
         settingsWindow.onStartRecordingTrigger = { [weak self] in
             self?.tapController.updateSnapshot { $0.isRecordingTrigger = true }
         }
         settingsWindow.onInitiatePairing = { [weak self] ip in
             guard let self else { return "오류" }
-            if !self.identityPersistent && !self.loadKeychainIdentity(notifyCoordinator: true) {
-                return "⚠ 키체인 기기 키 접근이 거부되어 페어링을 시작할 수 없습니다. '키체인 다시 읽기'에서 허용해 주세요."
+            if !self.identityPersistent {
+                self.loadKeychainIdentityAsync(activateForPrompt: true)
+                return self.keychainLoading
+                    ? "키체인 기기 키를 읽는 중입니다. macOS 키체인 확인 창에서 「항상 허용」을 누른 뒤 다시 시도해 주세요."
+                    : "⚠ 키체인 기기 키 접근이 거부되어 페어링을 시작할 수 없습니다. '키체인 다시 읽기'에서 허용해 주세요."
             }
             if self.remoteCoordinator.initiatePairing(withPeerIP: ip) {
-                return "\(ip)로 페어링 요청을 보냈습니다. 상대 Mac 화면에서 6자리 코드를 승인하세요."
+                return "\(ip)로 페어링 요청을 보냈습니다. 상대 기기 화면에서 6자리 코드를 승인하세요."
             }
             return "⚠ 페어링 요청을 보낼 수 없습니다."
         }
@@ -279,10 +289,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         settingsWindow.onCopyMyPairingToken = { [weak self] in
             guard let self else { return nil }
-            if !self.identityPersistent && !self.loadKeychainIdentity(notifyCoordinator: true) {
+            if !self.identityPersistent {
+                self.loadKeychainIdentityAsync(activateForPrompt: true)
                 return nil
             }
             let ip = self.remoteCoordinator.currentTailscaleSnapshot.selfNode?.ipv4
+                ?? TailscaleDiscovery.discoverLocalTailscaleIPs().ipv4
             return self.identity.exportPairingToken(
                 hostName: self.remoteCoordinator.hostDisplayName,
                 tailscaleIP: ip,
@@ -292,7 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.onImportPairingToken = { [weak self] token in
             guard let self else { return "오류" }
             if let rec = self.remoteCoordinator.importPairingToken(token) {
-                return "✓ '\(rec.name)' 등록 완료! 이제 양쪽 Mac이 자동으로 암호화 연결됩니다."
+                return "✓ '\(rec.name)' 등록 완료! 이제 양쪽 기기가 암호화 연결됩니다."
             }
             return "✗ 올바른 TKP1 페어링 토큰이 아니거나 자기 자신의 토큰입니다."
         }
@@ -302,8 +314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.settingsStore.removeTrustedPeer(deviceID: rec.deviceID)
             }
         }
-        settingsWindow.onRefreshTailscale = { [weak self] in
-            self?.refreshTailscaleAsync(probePaired: true)
+        settingsWindow.onRefreshTailscale = { [weak self] done in
+            self?.refreshTailscaleAsync(probePaired: true, onComplete: done)
         }
         settingsWindow.onWakeTextInputSwitcher = { [weak self] in
             self?.localEngine.switcherWaker.checkAndWarmAsync(force: true)
@@ -399,17 +411,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    private func refreshTailscaleAsync(probePaired: Bool) {
+    private func refreshTailscaleAsync(probePaired: Bool, onComplete: ((String) -> Void)? = nil) {
+        let trusted = settingsStore.trustedPeers
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let snap = TailscaleDiscovery.fetchStatusSync() else { return }
+            let cliSnap = TailscaleDiscovery.fetchStatusSync()
+            let localIPs = TailscaleDiscovery.discoverLocalTailscaleIPs()
+            let enriched = TailscaleDiscovery.enrichSnapshot(
+                cliSnap,
+                localIPs: localIPs,
+                trustedPeers: trusted
+            )
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.remoteCoordinator.updateTailscaleSnapshot(snap)
+                self.remoteCoordinator.updateTailscaleSnapshot(enriched)
                 if probePaired {
                     self.remoteCoordinator.probeAllPairedMacPeers()
                 }
                 self.sessionWatcher.refreshNow(reattachAX: false)
                 self.refreshAllUI()
+
+                if let onComplete {
+                    let desktopCount = enriched.desktopPeers.count
+                    if cliSnap != nil {
+                        onComplete("✓ Tailscale 기기 \(desktopCount)대 감지 완료")
+                    } else if let selfV4 = enriched.selfNode?.ipv4 {
+                        onComplete("ℹ Tailscale CLI 미설치/제한 — 로컬 utun IP(\(selfV4)) 자동 바인딩 완료 (아래 직접 IP 입력 또는 토큰으로 연결 가능)")
+                    } else {
+                        onComplete("⚠ Tailscale 네트워크(utun)가 감지되지 않았습니다. Tailscale 앱 연결 상태를 확인해 주세요.")
+                    }
+                }
             }
         }
     }
@@ -488,27 +518,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @discardableResult
-    private func loadKeychainIdentity(notifyCoordinator: Bool) -> Bool {
-        let result = CryptoIdentity.loadOrCreateDetailed()
-        switch result {
-        case .loaded(let loaded), .created(let loaded):
-            identity = loaded
-            identityPersistent = true
-            keychainErrorStatus = nil
-            if notifyCoordinator {
-                remoteCoordinator.updateIdentity(loaded, persistent: true)
-                refreshAllUI()
+    private func loadKeychainIdentityAsync(activateForPrompt: Bool) {
+        guard !keychainLoading else {
+            if activateForPrompt {
+                NSApp.activate(ignoringOtherApps: true)
             }
-            return true
-        case .keychainLocked(let status), .saveFailed(let status):
-            identityPersistent = false
-            keychainErrorStatus = status
-            if notifyCoordinator {
-                remoteCoordinator.updateIdentity(identity, persistent: false)
-                refreshAllUI()
+            return
+        }
+        keychainLoading = true
+        if activateForPrompt {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        refreshAllUI()
+
+        keychainQueue.async { [weak self] in
+            let result = CryptoIdentity.loadOrCreateDetailed()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.keychainLoading = false
+                switch result {
+                case .loaded(let loaded), .created(let loaded):
+                    self.identity = loaded
+                    self.identityPersistent = true
+                    self.keychainErrorStatus = nil
+                    self.remoteCoordinator.updateIdentity(loaded, persistent: true)
+                case .keychainLocked(let status), .saveFailed(let status):
+                    self.identityPersistent = false
+                    self.keychainErrorStatus = status
+                    self.remoteCoordinator.updateIdentity(self.identity, persistent: false)
+                }
+                self.refreshAllUI()
             }
-            return false
         }
     }
 
@@ -544,13 +584,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let conflicts = self.detectConflictingIMEApps()
                 return [
                     "ok": true,
-                    "version": "1.0.2",
+                    "version": "1.1.0",
                     "enabled": self.settingsStore.settings.enabled,
                     "paused": self.paused,
                     "accessibility": AXIsProcessTrusted(),
                     "hidTap": self.hidTapActive,
                     "sessionTap": self.sessionTapActive,
                     "identityPersistent": self.identityPersistent,
+                    "keychainLoading": self.keychainLoading,
                     "keychainError": self.keychainErrorStatus.map(Int.init) ?? 0,
                     "localSource": cur?.id ?? "",
                     "localLang": cur?.language.rawValue ?? "unknown",
@@ -609,6 +650,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     ]
                 }
                 let ip = self.remoteCoordinator.currentTailscaleSnapshot.selfNode?.ipv4
+                    ?? TailscaleDiscovery.discoverLocalTailscaleIPs().ipv4
                 if let token = self.identity.exportPairingToken(
                     hostName: self.remoteCoordinator.hostDisplayName,
                     tailscaleIP: ip,
@@ -734,7 +776,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let diag = DiagnosticsSummary(
-            version: "1.0.2",
+            version: "1.1.0",
             enabled: settings.enabled,
             paused: paused,
             hidTapActive: hidTapActive,

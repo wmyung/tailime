@@ -34,6 +34,10 @@ final class HUDPanelController {
         present(badge: badge, title: hostName, detail: detail, badgeColor: accent)
     }
 
+    func showRemoteFailure(hostName: String, detail: String) {
+        present(badge: "⚠", title: hostName, detail: detail, badgeColor: .systemOrange)
+    }
+
     func showLocalSwitch(language: InputLanguage) {
         let accent: NSColor = (language == .korean) ? .systemBlue : .systemGreen
         present(badge: language.shortBadge, title: language.displayName, detail: "로컬", badgeColor: accent)

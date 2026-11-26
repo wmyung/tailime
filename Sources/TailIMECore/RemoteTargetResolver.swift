@@ -50,6 +50,7 @@ public enum RemoteTargetResolver {
     private static let lobbyTitles: Set<String> = [
         "rustdesk", "settings", "preferences", "about", "screen sharing",
         "화면 공유", "환경설정", "설정", "connections", "jump desktop", "parsec",
+        "windows app", "microsoft remote desktop", "원격 데스크톱",
     ]
 
     public static func isRemoteViewerBundle(_ bundleID: String, allowedPrefixes: [String]) -> Bool {

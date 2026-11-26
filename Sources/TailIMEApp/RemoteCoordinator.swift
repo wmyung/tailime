@@ -81,6 +81,7 @@ final class RemoteCoordinator {
 
     var onStateUpdated: (() -> Void)?
     var onRemoteSwitchedHUD: ((String, InputLanguage?, Double?, Bool) -> Void)? // (host, lang, rttMs, isFallback)
+    var onRemoteSwitchFailedHUD: ((String, String) -> Void)? // (host, detail)
     var onPairingCompleted: ((TrustedPeerRecord) -> Void)?
 
     init(
@@ -115,13 +116,13 @@ final class RemoteCoordinator {
         tailscaleSnapshot = snapshot
         udpEndpoint.updateTailscaleSnapshot(snapshot)
 
-        // Update saved peer IPs from our own trusted local Tailscale daemon status
-        for peer in snapshot.peers where peer.isMacOS {
+        // Update saved peer IPs & OS from our own trusted local Tailscale daemon status (macOS + Windows)
+        for peer in snapshot.peers where peer.isTailIMESupportedOS {
             guard let ip = peer.preferredIP else { continue }
             for trusted in settingsStore.trustedPeers {
                 if trusted.name.caseInsensitiveCompare(peer.hostName) == .orderedSame
                     || trusted.name.caseInsensitiveCompare(peer.shortDNSName) == .orderedSame {
-                    settingsStore.updateTrustedPeerIP(deviceID: trusted.deviceID, ip: ip)
+                    settingsStore.updateTrustedPeerIP(deviceID: trusted.deviceID, ip: ip, os: peer.os)
                 }
             }
         }
@@ -169,11 +170,11 @@ final class RemoteCoordinator {
                 if identityPersistent {
                     let sessionKey = "\(ctx.bundleID)|\(ip)"
                     let isRustDesk = ctx.bundleID.lowercased().contains("rustdesk")
-                    // Prefer pure Direct UDP + adaptive HoldGate on Direct Tailscale paths and ALWAYS on RustDesk
-                    // (RustDesk's rdev/enigo maps extended F16/F17/F20 inconsistently on macOS).
-                    // On DERP-relayed non-RustDesk sessions (e.g. Apple Screen Sharing) or explicit inBandOnly, allow in-band carriers.
-                    let usesInBand = (settings.transportMode == .inBandOnly)
-                        || (settings.transportMode == .autoHybrid && !isRustDesk && !peer.isDirectPath && carrierSupportBySessionKey[sessionKey] == true)
+                    let avoidInBand = isRustDesk || !peer.isMacOS
+                    // Prefer pure Direct UDP + adaptive HoldGate on Direct Tailscale paths, ALWAYS on RustDesk,
+                    // and ALWAYS on Windows / unknown-OS peers (in-band F16/F17/F20 carriers are strictly non-RustDesk macOS-only!).
+                    let usesInBand = (!avoidInBand && settings.transportMode == .inBandOnly)
+                        || (settings.transportMode == .autoHybrid && !avoidInBand && !peer.isDirectPath && carrierSupportBySessionKey[sessionKey] == true)
                     if usesInBand {
                         let currentRemoteLang = peerStates[ip]?.currentLanguage
                             ?? lastKnownRemoteLanguageByIP[ip]
@@ -321,7 +322,8 @@ final class RemoteCoordinator {
                     return
                 }
                 let isRustDesk = context.bundleID.lowercased().contains("rustdesk")
-                if settings.transportMode != .udpDirectOnly && !isRustDesk && !pairedCandidates.isEmpty {
+                let allConfirmedMac = !pairedCandidates.isEmpty && pairedCandidates.allSatisfy(\.isMacOS)
+                if settings.transportMode != .udpDirectOnly && !isRustDesk && allConfirmedMac {
                     probeAndBindAmbiguousSession(context: context)
                 } else if settings.showRemoteHUD {
                     onRemoteSwitchedHUD?("원격 대상 선택 필요 (메뉴바에서 고정)", nil, nil, true)
@@ -373,9 +375,11 @@ final class RemoteCoordinator {
 
         let sessionKey = "\(context.bundleID)|\(ip)"
         let carrierKnown = carrierSupportBySessionKey[sessionKey]
+        let isRustDesk = context.bundleID.lowercased().contains("rustdesk")
+        let avoidInBand = isRustDesk || !peer.isMacOS
 
         switch settings.transportMode {
-        case .inBandOnly:
+        case .inBandOnly where !avoidInBand:
             if holdGen != 0 {
                 tapController.flushHoldGateAsync(reason: .completed, expectedGeneration: holdGen)
             }
@@ -391,7 +395,7 @@ final class RemoteCoordinator {
                 deadlineMs: 250
             )
 
-        case .udpDirectOnly:
+        case .udpDirectOnly, .inBandOnly:
             sendDirectSetUDP(
                 targetLang: targetLang,
                 targetDeviceID: trusted.deviceID,
@@ -402,8 +406,7 @@ final class RemoteCoordinator {
             )
 
         case .autoHybrid:
-            let isRustDesk = context.bundleID.lowercased().contains("rustdesk")
-            if !isRustDesk && !peer.isDirectPath && (carrierKnown == true || alreadyInjectedCarrierKeyCode != 0) {
+            if !avoidInBand && !peer.isDirectPath && (carrierKnown == true || alreadyInjectedCarrierKeyCode != 0) {
                 if holdGen != 0 {
                     tapController.flushHoldGateAsync(reason: .completed, expectedGeneration: holdGen)
                 }
@@ -428,7 +431,7 @@ final class RemoteCoordinator {
                     key: hmacKey,
                     holdGen: holdGen
                 )
-                if !isRustDesk && !peer.isDirectPath && carrierKnown == nil {
+                if !avoidInBand && !peer.isDirectPath && carrierKnown == nil {
                     probeCarrierCapability(
                         bundleID: context.bundleID,
                         targetDeviceID: trusted.deviceID,
@@ -489,7 +492,7 @@ final class RemoteCoordinator {
             bootSessionID: bootSessionID,
             seq: seq,
             targetLanguage: targetLang,
-            version: "1.0.2"
+            version: "1.1.0"
         )
         udpEndpoint.send(message: msg, toIP: ip, key: key, nonce: nonce)
 
@@ -539,7 +542,7 @@ final class RemoteCoordinator {
             seq: seq,
             targetLanguage: targetLang,
             carrierDeadlineMs: deadlineMs,
-            version: "1.0.2"
+            version: "1.1.0"
         )
         udpEndpoint.send(message: msg, toIP: ip, key: key, nonce: nonce)
 
@@ -656,16 +659,22 @@ final class RemoteCoordinator {
             senderName: hostDisplayName,
             bootSessionID: bootSessionID,
             seq: seq,
-            version: "1.0.2"
+            version: "1.1.0"
         )
         udpEndpoint.send(message: msg, toIP: ip, key: key, nonce: nonce)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+        // Retry once at +0.35s to survive cold Tailscale DERP / WireGuard handshake packet drop
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self, self.pendingPings[seq] != nil else { return }
+            self.udpEndpoint.send(message: msg, toIP: ip, key: key, nonce: nonce)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
             guard let self, let pending = self.pendingPings.removeValue(forKey: seq) else { return }
             pending.completion?(.failure(NSError(
                 domain: "TailIME",
                 code: 408,
-                userInfo: [NSLocalizedDescriptionKey: "응답 시간 초과 (상대 Mac에서 TailIME 실행 및 Tailscale 연결 확인)"]
+                userInfo: [NSLocalizedDescriptionKey: "응답 시간 초과 (상대 기기 TailIME 실행 · 방화벽 · Tailscale 연결 확인)"]
             )))
         }
     }
@@ -789,18 +798,39 @@ final class RemoteCoordinator {
 
     @discardableResult
     func initiatePairing(withPeerIP ip: String, isReply: Bool = false) -> Bool {
-        guard identityPersistent else { return false }
-        let hello = WireMessage(
-            cmd: .pairHello,
-            senderDeviceID: identity.deviceID,
-            senderName: hostDisplayName,
-            bootSessionID: bootSessionID,
-            seq: nextSeq(),
-            publicKeyBase64: identity.publicKeyBase64,
-            pairReply: isReply,
-            version: "1.0.2"
-        )
-        udpEndpoint.send(message: hello, toIP: ip, key: nil)
+        let trimmedIP = ip.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard identityPersistent,
+              TailscaleIPValidator.isTailscaleIP(trimmedIP) || TailscaleIPValidator.isLoopback(trimmedIP) else {
+            return false
+        }
+        let sendHello: () -> Void = { [weak self] in
+            guard let self, self.identityPersistent else { return }
+            let hello = WireMessage(
+                cmd: .pairHello,
+                senderDeviceID: self.identity.deviceID,
+                senderName: self.hostDisplayName,
+                bootSessionID: self.bootSessionID,
+                seq: self.nextSeq(),
+                publicKeyBase64: self.identity.publicKeyBase64,
+                pairReply: isReply,
+                senderOS: "macOS",
+                version: "1.1.0"
+            )
+            self.udpEndpoint.send(message: hello, toIP: trimmedIP, key: nil)
+        }
+        sendHello()
+        // For user-initiated pairing, retry twice (+0.45s, +1.1s) so a cold WireGuard/DERP tunnel
+        // never drops the pairing handshake silently on the first click!
+        if !isReply {
+            for delay in [0.45, 1.1] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self else { return }
+                    if self.settingsStore.trustedPeer(matchingIP: trimmedIP) == nil {
+                        sendHello()
+                    }
+                }
+            }
+        }
         return true
     }
 
@@ -814,9 +844,19 @@ final class RemoteCoordinator {
             deviceID: payload.deviceID,
             name: payload.name,
             publicKeyBase64: payload.publicKeyBase64,
-            lastKnownIP: payload.tailscaleIP
+            lastKnownIP: payload.tailscaleIP,
+            os: payload.os
         )
         settingsStore.saveTrustedPeer(record)
+        // Immediately merge newly imported trusted peer into the live snapshot (pass hostDisplayName to avoid main-thread DNS)
+        let enriched = TailscaleDiscovery.enrichSnapshot(
+            tailscaleSnapshot,
+            localIPs: (tailscaleSnapshot.selfNode?.ipv4, tailscaleSnapshot.selfNode?.ipv6),
+            hostName: hostDisplayName,
+            trustedPeers: settingsStore.trustedPeers
+        )
+        tailscaleSnapshot = enriched
+        udpEndpoint.updateTailscaleSnapshot(enriched)
         syncKeysToEndpoint()
         if let ip = record.lastKnownIP {
             pingPeer(ip: ip, completion: nil)
@@ -871,9 +911,22 @@ final class RemoteCoordinator {
         let srcIP = incoming.sourceIP
         let srcPort = incoming.sourcePort
 
-        // Security rule: ONLY update a trusted peer's saved IP after constant-time HMAC authentication succeeds!
+        // Security rule: ONLY update a trusted peer's saved IP, OS & reachable status after constant-time HMAC authentication succeeds!
         if incoming.packet.authenticated {
-            settingsStore.updateTrustedPeerIP(deviceID: msg.senderDeviceID, ip: srcIP)
+            settingsStore.updateTrustedPeerIP(deviceID: msg.senderDeviceID, ip: srcIP, os: msg.senderOS)
+            var st = peerStates[srcIP] ?? RemotePeerRuntimeState(
+                peerID: msg.senderDeviceID,
+                hostName: msg.senderName ?? srcIP,
+                ip: srcIP
+            )
+            st.daemonReachable = true
+            st.lastSeenAt = Date()
+            if let lang = msg.currentLanguage {
+                st.currentLanguage = lang
+                lastKnownRemoteLanguageByIP[srcIP] = lang
+            }
+            peerStates[srcIP] = st
+            onStateUpdated?()
         }
 
         let peerKey = settingsStore.trustedPeer(deviceID: msg.senderDeviceID)
@@ -900,7 +953,15 @@ final class RemoteCoordinator {
                 currentLanguage: cur?.language ?? .english,
                 sourceID: cur?.id,
                 ok: true,
-                version: "1.0.2"
+                senderOS: "macOS",
+                version: "1.1.0"
+            )
+            // Cache pong so a ping retry survives a lost pong response!
+            udpEndpoint.cacheIdempotentReply(
+                pong,
+                forSenderDeviceID: msg.senderDeviceID,
+                bootSessionID: msg.bootSessionID,
+                seq: msg.seq
             )
             udpEndpoint.send(message: pong, toIP: srcIP, port: srcPort, key: peerKey, nonce: incoming.packet.nonce)
 
@@ -1081,12 +1142,20 @@ final class RemoteCoordinator {
                 tapController.flushHoldGateAsync(reason: .completed, expectedGeneration: req.holdGateGen)
             }
 
+            let ackOK = msg.ok ?? true
             let now = ProcessInfo.processInfo.systemUptime
             let rttMs = max(0.1, (now - req.sentAt) * 1000.0)
-            let resultLang = msg.currentLanguage ?? req.targetLang
+            let resultLang: InputLanguage
+            if let reported = msg.currentLanguage {
+                resultLang = reported
+            } else if ackOK {
+                resultLang = req.targetLang
+            } else {
+                resultLang = peerStates[srcIP]?.currentLanguage ?? lastKnownRemoteLanguageByIP[srcIP] ?? .english
+            }
             lastKnownRemoteLanguageByIP[srcIP] = resultLang
 
-            if msg.via == "udp-fallback" {
+            if ackOK && msg.via == "udp-fallback" {
                 let bundle = currentRemoteContext.bundleID
                 if !bundle.isEmpty {
                     carrierSupportBySessionKey["\(bundle)|\(srcIP)"] = false
@@ -1109,7 +1178,19 @@ final class RemoteCoordinator {
             onStateUpdated?()
 
             if settingsStore.settings.showRemoteHUD {
-                onRemoteSwitchedHUD?(state.hostName, resultLang, rttMs, false)
+                if ackOK {
+                    onRemoteSwitchedHUD?(state.hostName, resultLang, rttMs, false)
+                } else {
+                    let reason: String
+                    if msg.sourceID == "uipi-elevated" {
+                        reason = "전환 차단됨 (상대 관리자 권한 창)"
+                    } else if msg.sourceID == "secure-desktop" {
+                        reason = "전환 차단됨 (보안/잠금 화면)"
+                    } else {
+                        reason = "원격 전환 실패 (상태 미변경)"
+                    }
+                    onRemoteSwitchFailedHUD?(state.hostName, reason)
+                }
             }
 
         case .probeQuery:
@@ -1221,9 +1302,17 @@ final class RemoteCoordinator {
             deviceID: msg.senderDeviceID,
             name: peerName,
             publicKeyBase64: pubKey,
-            lastKnownIP: srcIP
+            lastKnownIP: srcIP,
+            os: msg.senderOS
         )
         settingsStore.saveTrustedPeer(record)
+        let enriched = TailscaleDiscovery.enrichSnapshot(
+            tailscaleSnapshot,
+            localIPs: TailscaleDiscovery.discoverLocalTailscaleIPs(),
+            hostName: hostDisplayName,
+            trustedPeers: settingsStore.trustedPeers
+        )
+        updateTailscaleSnapshot(enriched)
         syncKeysToEndpoint()
 
         if let key = identity.derivePeerHMACKey(peerPublicKeyBase64: pubKey) {

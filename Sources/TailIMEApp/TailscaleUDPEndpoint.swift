@@ -29,6 +29,7 @@ final class TailscaleUDPEndpoint {
 
     private var replayGuard = SlidingWindowReplayGuard()
     private var whoisCache: [String: (valid: Bool, checkedAt: TimeInterval)] = [:]
+    private var pairRateLimiter: [String: [TimeInterval]] = [:]
     private let whoisTTL: TimeInterval = 300
 
     private var tailscaleSnapshot = TailscaleStatusSnapshot(selfNode: nil, peers: [])
@@ -175,15 +176,24 @@ final class TailscaleUDPEndpoint {
         closeAllSockets()
         guard consoleActive else { return }
 
+        // Always discover local Tailscale utun* IPv4/IPv6 directly from kernel getifaddrs()
+        // so Mac App Store / CLI-less Tailscale installs STILL bind their 100.x.y.z / fd7a:: sockets!
+        let localIPs = TailscaleDiscovery.discoverLocalTailscaleIPs()
         var desiredIPs: [(String, Int32)] = [("127.0.0.1", AF_INET)]
-        if let v4 = tailscaleSnapshot.selfNode?.ipv4, TailscaleIPValidator.isTailscaleIPv4(v4) {
-            desiredIPs.insert((v4, AF_INET), at: 0)
+        var seenIPs: Set<String> = ["127.0.0.1"]
+
+        for candidateV4 in [tailscaleSnapshot.selfNode?.ipv4, localIPs.ipv4].compactMap({ $0 }) {
+            if TailscaleIPValidator.isTailscaleIPv4(candidateV4), seenIPs.insert(candidateV4).inserted {
+                desiredIPs.insert((candidateV4, AF_INET), at: 0)
+            }
         }
-        if let v6 = tailscaleSnapshot.selfNode?.ipv6, TailscaleIPValidator.isTailscaleIPv6(v6) {
-            desiredIPs.append((v6, AF_INET6))
+        for candidateV6 in [tailscaleSnapshot.selfNode?.ipv6, localIPs.ipv6].compactMap({ $0 }) {
+            if TailscaleIPValidator.isTailscaleIPv6(candidateV6), seenIPs.insert(candidateV6).inserted {
+                desiredIPs.append((candidateV6, AF_INET6))
+            }
         }
 
-        var missingTailscaleBind = false
+        var missingTailscaleBind = (desiredIPs.count == 1) // Only loopback discovered so far
         for (ip, family) in desiredIPs {
             if let bound = createAndBindSocket(ip: ip, family: family, port: port) {
                 boundSockets.append(bound)
@@ -197,7 +207,7 @@ final class TailscaleUDPEndpoint {
             self?.onBindStatusChanged?(boundAddrs)
         }
 
-        // If Tailscale IP wasn't ready yet after boot/wake (EADDRNOTAVAIL), retry gracefully.
+        // If Tailscale IP wasn't ready yet after boot/wake (EADDRNOTAVAIL or utun not up), retry gracefully.
         if missingTailscaleBind {
             scheduleRebind(delay: 5.0)
         }
@@ -285,17 +295,19 @@ final class TailscaleUDPEndpoint {
                 ctrlBuf.withUnsafeMutableBytes { ctrlRaw in
                     withUnsafeMutablePointer(to: &senderStorage) { senderPtr in
                         var iov = iovec(iov_base: dataRaw.baseAddress, iov_len: dataRaw.count)
-                        var msg = msghdr()
-                        msg.msg_name = UnsafeMutableRawPointer(senderPtr)
-                        msg.msg_namelen = socklen_t(MemoryLayout<sockaddr_storage>.size)
-                        msg.msg_iov = withUnsafeMutablePointer(to: &iov) { $0 }
-                        msg.msg_iovlen = 1
-                        msg.msg_control = ctrlRaw.baseAddress
-                        msg.msg_controllen = socklen_t(ctrlRaw.count)
+                        withUnsafeMutablePointer(to: &iov) { iovPtr in
+                            var msg = msghdr()
+                            msg.msg_name = UnsafeMutableRawPointer(senderPtr)
+                            msg.msg_namelen = socklen_t(MemoryLayout<sockaddr_storage>.size)
+                            msg.msg_iov = iovPtr
+                            msg.msg_iovlen = 1
+                            msg.msg_control = ctrlRaw.baseAddress
+                            msg.msg_controllen = socklen_t(ctrlRaw.count)
 
-                        receivedLen = recvmsg(fd, &msg, 0)
-                        if receivedLen > 0 {
-                            ifIndex = Self.extractInterfaceIndex(from: &msg)
+                            receivedLen = recvmsg(fd, &msg, 0)
+                            if receivedLen > 0 {
+                                ifIndex = Self.extractInterfaceIndex(from: &msg)
+                            }
                         }
                     }
                 }
@@ -326,18 +338,6 @@ final class TailscaleUDPEndpoint {
                 continue
             }
 
-            // 3. Verify sender belongs to our Tailnet snapshot (or loopback self-test)
-            if !tailscaleSnapshot.isKnownPeerIP(srcIP) {
-                // Trigger background whois check for newly joined Tailnet peer; drop until verified.
-                verifyWhoisInBackground(ip: srcIP)
-                let now = ProcessInfo.processInfo.systemUptime
-                if let cached = whoisCache[srcIP], cached.valid, now - cached.checkedAt < whoisTTL {
-                    // Verified via whois cache
-                } else {
-                    continue
-                }
-            }
-
             let data = Data(payloadBuf[0..<receivedLen])
             let decoded: DecodedWirePacket
             do {
@@ -348,7 +348,10 @@ final class TailscaleUDPEndpoint {
                 continue
             }
 
-            // 4. Sliding-window replay & monotonic state-order protection on ALL authenticated packets (including ACK/PONG!)
+            // 3. Authenticated packets (constant-time X25519+HKDF-SHA256 HMAC from a trusted peer over utun*)
+            // NEVER require the optional `tailscale` CLI binary to be accepted!
+            // Unauthenticated `pairHello` packets are rate-limited and verified via snapshot/whois when CLI exists,
+            // or accepted strictly over utun* Tailscale CIDR when Mac App Store Tailscale has no CLI (still gated by 6-digit SAS).
             if decoded.authenticated {
                 let now = ProcessInfo.processInfo.systemUptime
                 let isMutating = [.set, .expectSet, .state].contains(decoded.message.cmd)
@@ -373,6 +376,33 @@ final class TailscaleUDPEndpoint {
                     }
                     continue
                 }
+            } else {
+                guard decoded.message.cmd == .pairHello else { continue }
+                guard allowPairHello(srcIP: srcIP) else { continue }
+
+                let incoming = IncomingUDPPacket(
+                    sourceIP: srcIP,
+                    sourcePort: srcPort,
+                    interfaceName: ifName,
+                    packet: decoded
+                )
+                if tailscaleSnapshot.isKnownPeerIP(srcIP) {
+                    onPacketReceived?(incoming)
+                    continue
+                }
+                let now = ProcessInfo.processInfo.systemUptime
+                if let cached = whoisCache[srcIP], cached.valid, now - cached.checkedAt < whoisTTL {
+                    onPacketReceived?(incoming)
+                    continue
+                }
+                // If Tailscale CLI is not installed (e.g. sandboxed Mac App Store Tailscale), accept utun* Tailscale-CIDR pairHello
+                // (still requires interactive 6-digit SAS user approval). Otherwise verify via whois and replay immediately!
+                if !TailscaleDiscovery.availableBinaries().isEmpty {
+                    verifyWhoisAndDeliverPairHello(ip: srcIP, incoming: incoming)
+                } else if ifName.hasPrefix("utun") || TailscaleIPValidator.isLoopback(srcIP) {
+                    onPacketReceived?(incoming)
+                }
+                continue
             }
 
             let incoming = IncomingUDPPacket(
@@ -385,16 +415,46 @@ final class TailscaleUDPEndpoint {
         }
     }
 
-    private func verifyWhoisInBackground(ip: String) {
+    private func allowPairHello(srcIP: String) -> Bool {
         let now = ProcessInfo.processInfo.systemUptime
-        if let cached = whoisCache[ip], now - cached.checkedAt < 15.0 {
+        if pairRateLimiter.count > 64 {
+            pairRateLimiter = pairRateLimiter.compactMapValues { stamps in
+                let kept = stamps.filter { now - $0 < 30.0 }
+                return kept.isEmpty ? nil : kept
+            }
+        }
+        let recent = (pairRateLimiter[srcIP] ?? []).filter { now - $0 < 30.0 }
+        if recent.count >= 6 {
+            pairRateLimiter[srcIP] = recent
+            return false
+        }
+        pairRateLimiter[srcIP] = recent + [now]
+        return true
+    }
+
+    private func verifyWhoisAndDeliverPairHello(ip: String, incoming: IncomingUDPPacket) {
+        let now = ProcessInfo.processInfo.systemUptime
+        if whoisCache.count > 64 {
+            whoisCache = whoisCache.filter { now - $0.value.checkedAt < whoisTTL }
+        }
+        if let cached = whoisCache[ip], !cached.valid, now - cached.checkedAt < 10.0 {
             return
         }
         whoisCache[ip] = (false, now)
         whoisQueue.async { [weak self] in
             let valid = TailscaleDiscovery.verifyPeerWhoisSync(ip: ip) != nil
             self?.queue.async {
-                self?.whoisCache[ip] = (valid, ProcessInfo.processInfo.systemUptime)
+                guard let self else { return }
+                self.whoisCache[ip] = (valid, ProcessInfo.processInfo.systemUptime)
+                if valid {
+                    self.onPacketReceived?(incoming)
+                } else if !self.tailscaleSnapshot.fromCLI && (incoming.interfaceName.hasPrefix("utun") || TailscaleIPValidator.isLoopback(ip)) {
+                    // CLI binary exists (e.g. sandboxed App Store Tailscale.app stub) but cannot query Tailnet:
+                    // utun* Tailscale WireGuard tunnel + 6-digit SAS interactive approval still protects pairing!
+                    // Do NOT negative-cache this CLI stub failure so subsequent retries/replies aren't dropped.
+                    self.whoisCache.removeValue(forKey: ip)
+                    self.onPacketReceived?(incoming)
+                }
             }
         }
     }
@@ -405,14 +465,16 @@ final class TailscaleUDPEndpoint {
         let isV6 = ip.contains(":")
         let family: Int32 = isV6 ? AF_INET6 : AF_INET
 
-        // Pick matching bound socket (prefer Tailscale-bound socket for Tailscale targets, loopback for 127.0.0.1)
+        // Pick matching bound socket: NEVER fall back to a 127.0.0.1 loopback socket when sending to a Tailscale IP!
         let matchingSocket: Int32?
         if TailscaleIPValidator.isLoopback(ip) {
             matchingSocket = boundSockets.first(where: { $0.family == family && $0.bindIP == "127.0.0.1" })?.fd
                 ?? boundSockets.first(where: { $0.family == family })?.fd
         } else {
             matchingSocket = boundSockets.first(where: { $0.family == family && $0.bindIP != "127.0.0.1" })?.fd
-                ?? boundSockets.first(where: { $0.family == family })?.fd
+            if matchingSocket == nil {
+                scheduleRebind(delay: 0.25)
+            }
         }
 
         let tempFD: Int32

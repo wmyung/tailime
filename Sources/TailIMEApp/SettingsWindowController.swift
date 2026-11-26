@@ -27,7 +27,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let tabView = NSTabView()
 
     // Header
-    private let headerVersionLabel = NSTextField(labelWithString: "v1.0.2")
+    private let headerVersionLabel = NSTextField(labelWithString: "v1.1.0")
     private let statusPillContainer = NSView()
     private let statusPillLabel = NSTextField(labelWithString: "")
 
@@ -60,7 +60,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let optionalHIDNote = NSTextField(wrappingLabelWithString: "")
 
     // Tab 2: Remote Tailscale
-    private let remoteEnabledCheck = NSButton(checkboxWithTitle: "Tailscale 원격 Mac 한영 전환 활성화", target: nil, action: nil)
+    private let remoteEnabledCheck = NSButton(checkboxWithTitle: "Tailscale 원격 기기(macOS · Windows) 한영 전환 활성화", target: nil, action: nil)
     private let autoEnglishCheck = NSButton(checkboxWithTitle: "원격 창 포커스 시 로컬 Mac 자동 영문(ABC) 고정", target: nil, action: nil)
     private let restoreBlurCheck = NSButton(checkboxWithTitle: "원격 창 벗어날 때 이전 로컬 입력기 복원", target: nil, action: nil)
     private let remoteHUDCheck = NSButton(checkboxWithTitle: "원격 전환 시 미니 HUD 알림 표시", target: nil, action: nil)
@@ -68,6 +68,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let fallbackPopup = NSPopUpButton()
     private let tailscaleStatusLabel = NSTextField(wrappingLabelWithString: "")
     private let peerPopup = NSPopUpButton()
+    private let directIPField = NSTextField()
     private let pairDirectBtn = NSButton(title: "직접 페어링 요청", target: nil, action: nil)
     private let pingPeerBtn = NSButton(title: "연결 테스트", target: nil, action: nil)
     private let copyTokenBtn = NSButton(title: "내 토큰 복사", target: nil, action: nil)
@@ -112,13 +113,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     var onCopyMyPairingToken: (() -> String?)?
     var onImportPairingToken: ((String) -> String)?
     var onClearTrustedPeers: (() -> Void)?
-    var onRefreshTailscale: (() -> Void)?
+    var onRefreshTailscale: ((@escaping (String) -> Void) -> Void)?
     var onWakeTextInputSwitcher: (() -> Void)?
     var onDiagnosticsVisibleChanged: ((Bool) -> Void)?
 
     init() {
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 690, height: 600),
+            contentRect: NSRect(x: 0, y: 0, width: 690, height: 632),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -283,12 +284,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         tailscaleStatusLabel.stringValue = "내 기기: \(selfHost) (\(selfIP))\nUDP 바인딩: \(binds)"
 
         let prevSelectedIP = selectedPeerIP()
-        displayedMacPeers = tailscaleSnapshot.peers.filter(\.isMacOS)
+        displayedMacPeers = tailscaleSnapshot.peers.filter(\.isTailIMESupportedOS)
         peerPopup.removeAllItems()
         if displayedMacPeers.isEmpty {
-            peerPopup.addItem(withTitle: "감지된 Tailscale Mac 피어 없음")
-            pairDirectBtn.isEnabled = false
-            pingPeerBtn.isEnabled = false
+            peerPopup.addItem(withTitle: "감지된 피어 없음 — 아래에 Tailscale IP 직접 입력 가능")
         } else {
             for peer in displayedMacPeers {
                 let ip = peer.preferredIP ?? "-"
@@ -300,18 +299,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 } else {
                     extra = peer.online ? " [온라인]" : " [오프라인]"
                 }
-                peerPopup.addItem(withTitle: "\(peer.hostName) (\(ip))\(extra)")
+                peerPopup.addItem(withTitle: "\(peer.hostName) [\(peer.osShortLabel)] (\(ip))\(extra)")
             }
             if let prev = prevSelectedIP,
                let matchIdx = displayedMacPeers.firstIndex(where: { $0.preferredIP == prev }) {
                 peerPopup.selectItem(at: matchIdx)
             }
-            pairDirectBtn.isEnabled = true
-            pingPeerBtn.isEnabled = true
         }
+        pairDirectBtn.isEnabled = true
+        pingPeerBtn.isEnabled = true
 
         if trustedPeers.isEmpty {
-            trustedPeersLabel.stringValue = "신뢰된 원격 Mac 없음 — 위에서 피어를 선택해 페어링하거나 토큰을 교환하세요."
+            trustedPeersLabel.stringValue = "신뢰된 원격 기기 없음 — 위에서 Mac 또는 Windows 피어를 선택해 페어링하거나 토큰을 교환하세요."
         } else {
             trustedPeersLabel.stringValue = trustedPeers.map { rec in
                 let ip = rec.lastKnownIP ?? "IP 대기"
@@ -684,6 +683,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let peerRow = NSStackView(views: [peerPopup, refreshPeersBtn])
         peerRow.orientation = .horizontal; peerRow.spacing = 8
 
+        directIPField.placeholderString = "선택: Tailscale IP 직접 입력 (예: 100.x.y.z — CLI 미감지 시 사용)"
+        directIPField.bezelStyle = .roundedBezel
+        directIPField.translatesAutoresizingMaskIntoConstraints = false
+        directIPField.widthAnchor.constraint(greaterThanOrEqualToConstant: 440).isActive = true
+        let directIPRow = NSStackView(views: [NSTextField(labelWithString: "직접 IP:"), directIPField])
+        directIPRow.orientation = .horizontal; directIPRow.spacing = 8
+
         let actionRow = NSStackView(views: [pairDirectBtn, pingPeerBtn, copyTokenBtn, pasteTokenBtn])
         actionRow.orientation = .horizontal; actionRow.spacing = 6
 
@@ -692,8 +698,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             views: [remoteEnabledCheck, autoEnglishCheck, restoreBlurCheck, remoteHUDCheck, transportRow, fallbackRow]
         )
         let pairCard = makeCard(
-            title: "Tailscale Mac 피어 및 암호화 페어링 (X25519 + 6자리 SAS)",
-            views: [tailscaleStatusLabel, peerRow, actionRow, remoteActionStatusLabel, trustedPeersLabel, clearTrustedBtn]
+            title: "Tailscale 원격 기기 (macOS · Windows) 및 암호화 페어링 (X25519 + 6자리 SAS)",
+            views: [tailscaleStatusLabel, peerRow, directIPRow, actionRow, remoteActionStatusLabel, trustedPeersLabel, clearTrustedBtn]
         )
 
         return wrapStack(NSStackView(views: [behaviorCard, pairCard]))
@@ -854,14 +860,30 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         onSettingsMutate? { $0.fallbackKeyMode = mode }
     }
 
+    private func resolvedTargetPeerIP() -> String? {
+        let manual = directIPField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !manual.isEmpty {
+            return manual
+        }
+        return selectedPeerIP()
+    }
+
     @objc private func tapPairDirect() {
-        guard let ip = selectedPeerIP() else { return }
-        let msg = onInitiatePairing?(ip) ?? "\(ip)로 페어링 요청을 보냈습니다. 상대 Mac 화면에서 6자리 코드를 승인하세요."
+        guard let ip = resolvedTargetPeerIP(),
+              TailscaleIPValidator.isTailscaleIP(ip) || TailscaleIPValidator.isLoopback(ip) else {
+            remoteActionStatusLabel.stringValue = "⚠ 피어를 선택하거나 '직접 IP' 칸에 상대 기기의 Tailscale IP(100.x.y.z)를 입력해 주세요."
+            return
+        }
+        let msg = onInitiatePairing?(ip) ?? "\(ip)로 페어링 요청을 보냈습니다. 상대 기기 화면에서 6자리 코드를 승인하세요."
         remoteActionStatusLabel.stringValue = msg
     }
 
     @objc private func tapPingPeer() {
-        guard let ip = selectedPeerIP() else { return }
+        guard let ip = resolvedTargetPeerIP(),
+              TailscaleIPValidator.isTailscaleIP(ip) || TailscaleIPValidator.isLoopback(ip) else {
+            remoteActionStatusLabel.stringValue = "⚠ 피어를 선택하거나 '직접 IP' 칸에 상대 기기의 Tailscale IP(100.x.y.z)를 입력해 주세요."
+            return
+        }
         remoteActionStatusLabel.stringValue = "\(ip)에 Ping 전송 중..."
         onPingPeer?(ip) { [weak self] message in
             DispatchQueue.main.async {
@@ -875,20 +897,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             if latestDiagnostics?.keychainErrorStatus != nil {
                 remoteActionStatusLabel.stringValue = "⚠ 키체인 기기 키 접근이 거부되어 토큰을 생성할 수 없습니다. '키체인 다시 읽기'에서 허용해 주세요."
             } else {
-                remoteActionStatusLabel.stringValue = "페어링 토큰 생성 실패"
+                remoteActionStatusLabel.stringValue = "키체인 기기 키를 읽는 중이거나 토큰을 생성할 수 없습니다. 잠시 후 다시 시도해 주세요."
             }
             return
         }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(token, forType: .string)
-        remoteActionStatusLabel.stringValue = "내 페어링 토큰이 클립보드에 복사되었습니다. 다른 Mac에서 '토큰 붙여넣기'를 누르세요."
+        remoteActionStatusLabel.stringValue = "내 페어링 토큰이 클립보드에 복사되었습니다. 상대 기기(Mac 또는 Windows)에서 '토큰 붙여넣기'를 누르세요."
     }
 
     @objc private func tapPasteToken() {
         let paste = NSPasteboard.general.string(forType: .string) ?? ""
         let alert = NSAlert()
-        alert.messageText = "상대 Mac 페어링 토큰 입력"
-        alert.informativeText = "상대 Mac에서 복사한 TKP1:... 토큰을 붙여넣으세요."
+        alert.messageText = "상대 기기 페어링 토큰 입력"
+        alert.informativeText = "상대 Mac 또는 Windows에서 복사한 TKP1:... 토큰을 붙여넣으세요."
         alert.addButton(withTitle: "등록")
         alert.addButton(withTitle: "취소")
         let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 380, height: 24))
@@ -901,7 +923,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func tapRefreshPeers() {
         remoteActionStatusLabel.stringValue = "Tailscale 피어 목록 새로고침 중..."
-        onRefreshTailscale?()
+        onRefreshTailscale? { [weak self] statusMsg in
+            DispatchQueue.main.async {
+                self?.remoteActionStatusLabel.stringValue = statusMsg
+            }
+        }
     }
 
     @objc private func tapClearTrusted() {

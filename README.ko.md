@@ -1,39 +1,52 @@
 # TailIME
 
-**로컬 Mac에서는 딜레이·씹힘 없이 빠릿하게, Tailscale로 연결된 원격 Mac에서는 Karabiner·원격 앱 모드와 무관하게 정확하게 한영을 전환하는 macOS 네이티브 메뉴바 앱**
+**로컬 Mac에서는 딜레이·씹힘 없이 빠릿하게, Tailscale로 연결된 Mac ↔ Mac · Mac ↔ Windows · Windows ↔ Windows 원격 제어(RustDesk·RDP/Windows App·화면공유·VNC·Parsec)에서는 어떤 한영키·원격 앱 모드에서도 정확하게 한영을 전환하는 macOS·Windows 네이티브 유틸리티**
 
 [English](README.md) | **한국어**
 
-[![Platform](https://img.shields.io/badge/macOS-13%20%E2%80%93%2026%2B-black)](https://github.com/wmyung/tailime/releases/latest)
-[![Arch](https://img.shields.io/badge/arch-Universal%20(arm64%20%2B%20x86__64)-blue)](https://github.com/wmyung/tailime/releases/latest)
+[![Platform](https://img.shields.io/badge/macOS%2013%E2%80%9326%2B%20%7C%20Windows%2010%2F11-black)](https://github.com/wmyung/tailime/releases/latest)
+[![Arch](https://img.shields.io/badge/arch-macOS%20Universal%20%7C%20Windows%20x64-blue)](https://github.com/wmyung/tailime/releases/latest)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero%20external%20packages-brightgreen)](#소스에서-빌드)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Download](https://img.shields.io/badge/Download-TailIME--1.0.2--macos.zip-0071e3)](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip)
+[![Download](https://img.shields.io/badge/Release-v1.1.0-0071e3)](https://github.com/wmyung/tailime/releases/tag/v1.1.0)
 
 ---
 
 ## 왜 만들었나요?
 
-Mac 사용자(특히 **Karabiner-Elements**로 우측 `⌘`/`⌥`를 `F18`/`F19`로 바꿔 쓰며 **RustDesk·화면공유·VNC**로 다른 Mac에 접속하는 환경)는 두 가지 고질적인 고통을 겪습니다.
+Mac과 Windows를 함께 쓰며 **RustDesk·RDP(원격 데스크톱/Windows App)·화면공유·VNC**로 원격 제어하는 한국어 사용자는 두 가지 고질적인 고통을 겪습니다.
 
-1. **로컬 한영 전환 딜레이 & 첫 글자 씹힘**: macOS는 키를 **뗄 때** 전환되어 빠르게 치면 글자가 꼬이고(`한dud` → `하dud`), macOS 26+에서는 메모리 절약으로 `TextInputSwitcher`가 종료되어 첫 한영키 입력이 통째로 무시됩니다.
-2. **원격 Mac 제어 시 한영 전환 불능 & 자소 분리**: 로컬 macOS/Karabiner가 한영키를 먼저 가로채 버리거나, RustDesk의 Translate/Map 모드 차이 때문에 원격 Mac의 한영 전환이 안 되거나, 로컬 한글 입력기가 켜진 채 원격 창에 입력해 자소가 깨집니다.
+1. **로컬 한영 전환 딜레이 & 첫 글자 씹힘 (macOS)**: macOS는 키를 **뗄 때** 전환되어 빠르게 치면 글자가 꼬이고(`한dud` → `하dud`), macOS 26+에서는 메모리 절약으로 `TextInputSwitcher`가 종료되어 첫 한영키 입력이 통째로 무시됩니다.
+2. **원격 제어 시 한영 전환 불능 & 자소 분리 (Mac ↔ Mac · Mac ↔ Windows · Windows ↔ Windows)**: 로컬 macOS/Karabiner/Windows가 한영키를 먼저 가로채 버리거나, RustDesk의 Translate/Map 모드·RDP 키 매핑 차이 때문에 원격 기기의 한영 전환이 안 되거나, 로컬 한글 입력기가 켜진 채 원격 창에 입력해 자소가 깨집니다.
 
-**TailIME**는 기존 Karabiner·macOS 단축키 설정을 **단 한 줄도 건드리지 않고** 이 두 문제를 한 번에 해결합니다.
+**TailIME**는 기존 Karabiner·macOS·Windows 단축키 설정을 **단 한 줄도 건드리지 않고** 양쪽 운영체제의 이 문제를 한 번에 해결합니다.
 
 ---
 
-## 바로 다운로드 & 설치
+## 바로 다운로드 & 설치 (`v1.1.0`)
 
-- **[TailIME-1.0.2-macos.zip 다운로드 (Universal arm64 + x86_64)](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip.sha256))
+### macOS 설치파일 (Universal `arm64` + `x86_64`)
+- **원클릭 설치 패키지 (`.pkg`):** **[TailIME-1.1.0-macos.pkg](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.pkg)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.pkg.sha256))
+- **디스크 이미지 (`.dmg`):** **[TailIME-1.1.0-macos.dmg](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.dmg)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.dmg.sha256))
+- **포터블 압축파일 (`.zip`):** **[TailIME-1.1.0-macos.zip](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.zip.sha256))
 
 ```bash
-unzip TailIME-1.0.2-macos.zip
-cd TailIME-1.0.2
+unzip TailIME-1.1.0-macos.zip
+cd TailIME-1.1.0
 ./install.sh --link-cli
 ```
 
-- macOS `renamex_np(RENAME_SWAP)` 단일 시스템콜로 기존 앱을 안전하게 원자적 교체하며, 실패 시 자동 복원합니다.
+### Windows 10 / 11 설치파일 (`x64`)
+- **GUI 설치 프로그램 (`.exe`):** **[TailIME-1.1.0-windows-x64-setup.exe](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-windows-x64-setup.exe)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-windows-x64-setup.exe.sha256))
+  - `%LOCALAPPDATA%\TailIME\`에 설치되며 시작 메뉴 바로가기, 자동 실행, Windows 앱 제거 항목, 사용자 `PATH`(`tailime-ctl.exe`), Tailscale 전용 방화벽 규칙(UDP `39418`, `100.64.0.0/10`·`fd7a:115c:a1e0::/48` 한정)을 자동으로 등록합니다.
+- **포터블 압축파일 (`.zip`):** **[TailIME-1.1.0-windows-x64.zip](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-windows-x64.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-windows-x64.zip.sha256))
+
+```powershell
+# 포터블 ZIP 설치 (PowerShell)
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -AddFirewall
+```
+
+- **미서명 오픈소스 빌드 안내:** macOS 첫 실행 시 Gatekeeper 안내가 뜨면 `우클릭 → 열기` 또는 `./install.sh --link-cli`를 사용하세요. Windows에서 SmartScreen 경고가 뜨면 **「추가 정보 → 실행」**을 선택하세요.
 - 기존 `~/.config/karabiner/karabiner.json`이나 시스템 단축키 설정은 절대 수정하지 않습니다.
 
 ---
@@ -131,25 +144,42 @@ echo "TKP1:..." | tailime-ctl pair-import
   - **빠른 복구:** 이미 자소가 분리된 상태라면 원격 Mac에서 `Cmd+Tab`으로 다른 앱에 갔다가 돌아오거나, 다른 창을 한 번 클릭한 뒤 입력창을 다시 클릭하거나, 한영키를 한 번 껐다 켜서 `KIM_Extension` 재연결을 시도해 볼 수 있습니다. 원격 Mac에 떠 있는 RustDesk 연결 상태 창(`--cm`)을 최소화해 두는 것도 포커스 충돌을 줄이는 데 도움이 됩니다.
 - **RustDesk 키보드 모드 확인:** RustDesk가 **Translate mode**로 동작하면 `CGEventKeyboardSetUnicodeString`으로 문자를 직접 주입해 macOS `KoreanIM` 조합기를 우회할 수 있습니다. RustDesk 툴바의 키보드 아이콘에서 **Map mode**를 선택(필요 시 같은 메뉴에서 macOS용 **Input Source 1 / 2** 전환)하고, TailIME의 **원격 창 포커스 시 로컬 자동 영문(ABC) 고정**을 켜 두세요.
 
-### 6. 10초 빠른 진단
+### 6. Windows 전용 트러블슈팅 (방화벽 · 관리자 창 UIPI · 101/106 키보드)
+- **Windows 방화벽이 UDP `39418`을 차단할 때 (`daemonReachable: false`):** 설치 프로그램을 다시 실행해 방화벽 허용을 승인하거나 **관리자 권한 PowerShell**에서 아래 명령을 실행하세요.
+  ```powershell
+  netsh advfirewall firewall delete rule name=all program="$env:LOCALAPPDATA\TailIME\TailIME.exe"
+  netsh advfirewall firewall add rule name="TailIME (Tailscale UDP 39418)" dir=in action=allow protocol=UDP localport=39418 remoteip=100.64.0.0/10,fd7a:115c:a1e0::/48 program="$env:LOCALAPPDATA\TailIME\TailIME.exe" profile=any enable=yes
+  ```
+- **관리자 권한으로 열린 창에서 한영이 바뀌지 않을 때 (`elevationBlocked: true`):** Windows UIPI 보안 정책상 일반 권한의 `TailIME.exe`는 관리자 권한 창(관리자 PowerShell 등)의 입력기를 제어할 수 없습니다. 관리자 창에서도 전환하려면 `TailIME.exe`를 관리자 권한으로 실행하세요.
+- **101키 영문 자판 vs 103/106키 한글 자판:** 한글 103/106 자판의 우측 Alt는 `VK_HANGUL (0x15)`, 영문 101 자판의 우측 Alt는 `VK_RMENU (0xA5)`로 들어옵니다. **TailIME 설정**에서 둘 다 기본 활성화되어 있으며, 우측 Alt 단독 탭 시 Windows 메뉴바 포커스 활성화도 자동 차단합니다.
+- **Mac App Store Tailscale(CLI 미설치) 및 직접 IP 연결 (`v1.1.0`):** Mac App Store판 Tailscale처럼 `tailscale` CLI가 없거나 샌드박스로 차단된 환경에서도 커널 `utun*` 인터페이스(`getifaddrs`)에서 로컬 Tailscale IP(`100.x.y.z` / `fd7a:...`)를 직접 찾아 UDP `39418`에 바인딩하며, HMAC 인증된 신뢰 기기 패킷은 CLI 없이도 즉시 수용합니다. **설정 → 원격 Tailscale → 직접 IP** 칸에 상대 IP를 직접 입력해 6자리 SAS 페어링·Ping을 실행할 수 있으며, 콜드 WireGuard 터널에서도 자동 재전송으로 안정적으로 연결됩니다.
+- **macOS `v1.1.0` 키체인 비동기 시작:** `v1.1.0`부터는 macOS에서 `tailime-ctl` IPC와 메뉴바·로컬 한영 전환을 먼저 시작한 뒤 키체인 기기 키를 백그라운드로 읽어, 키체인 확인 창이 다른 창 뒤에 가려져도 `tailime-ctl status`가 "실행 중이 아닙니다"로 오인하지 않습니다.
+
+### 7. 10초 빠른 진단
 ```bash
-tailime-ctl status   # 권한, 이벤트 탭, 키체인 키 상태(identityPersistent), 감지된 트리거, 충돌 앱(conflictingApps), 원격 인식 상태 확인
-tailime-ctl peers    # Tailscale 온라인/Direct 경로 및 상대 TailIME 응답(daemonReachable) 확인
+tailime-ctl status   # 권한/키보드 훅, 키체인/DPAPI 키 상태(identityPersistent), UDP 바인딩, 원격 인식 상태 확인
+tailime-ctl peers    # Tailscale macOS·Windows 피어 온라인/Direct 경로 및 상대 TailIME 응답(daemonReachable) 확인
 ```
-또는 메뉴바 **진단 및 실시간 키 테스트...**를 열어 키 입력 시 실제로 들어오는 키코드·플래그를 실시간으로 확인할 수 있습니다.
+또는 메뉴바(macOS) / 시스템 트레이(Windows)에서 **진단 요약 복사**로 민감정보 없는 진단 정보를 바로 확인할 수 있습니다.
 
 ---
 
 ## 소스에서 빌드
 
-Xcode 전체 앱 없이 **Xcode Command Line Tools**(`xcode-select --install`)만으로 빌드·테스트됩니다.
+- **macOS:** Xcode Command Line Tools (`xcode-select --install`)
+- **Windows (macOS에서 크로스 컴파일 또는 Windows에서 직접 빌드):** Go 1.27+ (`CGO_ENABLED=0`, 외부 의존성 0개)
 
 ```bash
 git clone https://github.com/wmyung/tailime.git
 cd tailime
 swift run tailime-test
-./scripts/package-dist.sh
+(cd windows && go test ./...)
+./scripts/package-all.sh
 ```
+
+빌드 산출물(`dist/`):
+- **macOS:** `TailIME-1.1.0-macos.pkg`, `TailIME-1.1.0-macos.dmg`, `TailIME-1.1.0-macos.zip`
+- **Windows:** `TailIME-1.1.0-windows-x64-setup.exe`, `TailIME-1.1.0-windows-x64.zip`
 
 > 재빌드 후에도 macOS 손쉬운 사용 권한을 유지하려면 `./scripts/setup-local-cert.sh`로 로컬 서명 인증서를 한 번 만든 뒤 `CODESIGN_IDENTITY="TailIME Local Signing" ./scripts/package-dist.sh`로 빌드하세요.
 

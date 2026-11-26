@@ -1,40 +1,54 @@
 # TailIME
 
-**Zero-lag Korean/English switching on macOS — locally and across Tailscale-connected remote Macs. Works with Karabiner, native shortcuts, RustDesk (Translate & Map), Screen Sharing, and VNC. Zero dependencies. No telemetry.**
+**Zero-lag Korean/English switching across macOS and Windows over Tailscale — locally on macOS and bidirectionally across Mac ↔ Mac, Mac ↔ Windows, and Windows ↔ Windows remote desktop sessions (RustDesk, RDP / Windows App, Screen Sharing, VNC, Parsec). Zero dependencies. No telemetry.**
 
 **English** | [한국어 (Korean Guide)](README.ko.md)
 
-[![Platform](https://img.shields.io/badge/macOS-13%20%E2%80%93%2026%2B-black)](https://github.com/wmyung/tailime/releases/latest)
-[![Arch](https://img.shields.io/badge/arch-Universal%20(arm64%20%2B%20x86__64)-blue)](https://github.com/wmyung/tailime/releases/latest)
-[![Runtime](https://img.shields.io/badge/runtime-native%20Swift%20%2B%20AppKit-orange)](#architecture)
+[![Platform](https://img.shields.io/badge/macOS%2013%E2%80%9326%2B%20%7C%20Windows%2010%2F11-black)](https://github.com/wmyung/tailime/releases/latest)
+[![Arch](https://img.shields.io/badge/arch-macOS%20Universal%20%7C%20Windows%20x64-blue)](https://github.com/wmyung/tailime/releases/latest)
+[![Runtime](https://img.shields.io/badge/runtime-native%20Swift%20%2B%20Go-orange)](#architecture)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero%20external%20packages-brightgreen)](#build-from-source)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Download](https://img.shields.io/badge/Download-TailIME--1.0.2--macos.zip-0071e3)](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip)
+[![Download](https://img.shields.io/badge/Release-v1.1.0-0071e3)](https://github.com/wmyung/tailime/releases/tag/v1.1.0)
 
 ---
 
-**TailIME** is a lightweight native macOS menu bar utility built to end two chronic headaches for Korean Mac users:
+**TailIME** is a lightweight native utility for **macOS** (Swift + AppKit) and **Windows** (Go + Win32) built to end two chronic headaches for Korean users:
 
-1. **Sluggish local switching & dropped first characters** — macOS switches on key-up (causing rollover typos like `한dud` → `하dud`), and macOS 26+ kills `com.apple.TextInputSwitcher` under memory pressure so the first switch press after idle does nothing.
-2. **Broken Korean/English switching over remote desktop** — when controlling a remote Mac over Tailscale via RustDesk, Apple Screen Sharing, VNC, Jump Desktop, or Parsec, your local OS or Karabiner intercepts the switch key, Translate vs Map mode breaks Hangul composition, or local Hangul IME hijacks keystrokes meant for the remote host.
+1. **Sluggish local switching & dropped first characters (macOS)** — macOS switches on key-up (causing rollover typos like `한dud` → `하dud`), and macOS 26+ kills `com.apple.TextInputSwitcher` under memory pressure so the first switch press after idle does nothing.
+2. **Broken Korean/English switching over remote desktop (Mac ↔ Mac, Mac ↔ Windows, Windows ↔ Windows)** — when controlling a remote Mac or Windows PC over Tailscale via RustDesk, RDP / Windows App, Apple Screen Sharing, VNC, Jump Desktop, or Parsec, your local OS or Karabiner intercepts the switch key, Translate vs Map mode breaks Hangul composition, or local Hangul IME hijacks keystrokes meant for the remote host.
 
-Install `TailIME.app` on both Macs, pair in 10 seconds with a 6-digit SAS code, and keep your existing Karabiner or macOS keyboard setup completely untouched.
+Install `TailIME` on both machines (macOS or Windows), pair in 10 seconds with a 6-digit SAS code or `TKP1` token, and keep your existing Karabiner, macOS, or Windows keyboard settings completely untouched.
 
 ---
 
-## Direct Download
+## Direct Download (`v1.1.0`)
 
-Download the Universal (`arm64` + `x86_64`) package from GitHub Releases:
-
-- **[TailIME-1.0.2-macos.zip](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip.sha256))
+### macOS (Universal `arm64` + `x86_64`)
+- **Installer (`.pkg`):** **[TailIME-1.1.0-macos.pkg](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.pkg)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.pkg.sha256))
+- **Disk Image (`.dmg`):** **[TailIME-1.1.0-macos.dmg](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.dmg)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.dmg.sha256))
+- **Portable Archive (`.zip`):** **[TailIME-1.1.0-macos.zip](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.zip.sha256))
 
 ```bash
-unzip TailIME-1.0.2-macos.zip
-cd TailIME-1.0.2
+unzip TailIME-1.1.0-macos.zip
+cd TailIME-1.1.0
 ./install.sh --link-cli
 ```
 
-> **Note on existing settings:** `TailIME` **never modifies** `~/.config/karabiner/karabiner.json` or `com.apple.symbolichotkeys`. It reads your existing switch keys (`F18`, `F19`, `Ctrl+Space`, `Lang1`, etc.) automatically.
+### Windows 10 / 11 (`x64`)
+- **GUI Installer (`.exe`):** **[TailIME-1.1.0-windows-x64-setup.exe](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-windows-x64-setup.exe)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-windows-x64-setup.exe.sha256))
+  - Installs to `%LOCALAPPDATA%\TailIME\`, adds Start Menu shortcut, auto-start, Installed Apps uninstall entry, User `PATH` (`tailime-ctl.exe`), and offers a scoped Windows Defender Firewall rule (UDP `39418` restricted to Tailscale `100.64.0.0/10` and `fd7a:115c:a1e0::/48` only).
+- **Portable Archive (`.zip`):** **[TailIME-1.1.0-windows-x64.zip](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-windows-x64.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-windows-x64.zip.sha256))
+
+```powershell
+# PowerShell install from portable ZIP (removes Mark-of-the-Web automatically)
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -AddFirewall
+```
+
+> **Note on unsigned open-source builds:**
+> - **macOS:** Ad-hoc signed — right-click → **Open** (or allow under **System Settings → Privacy & Security**) on first run, or run `./install.sh --link-cli`.
+> - **Windows:** Unsigned — if Windows SmartScreen warns on first launch, click **More info → Run anyway** (or inspect/build from `windows/` with Go 1.27+).
+> - **Existing settings:** `TailIME` **never modifies** `~/.config/karabiner/karabiner.json` or `com.apple.symbolichotkeys`.
 
 ---
 
@@ -95,16 +109,10 @@ flowchart LR
 
 ## Quick Start (2 Minutes)
 
-### 1. Install on Both Macs
+### 1. Install on Both Machines (macOS & Windows)
 
-Install [TailIME-1.0.2-macos.zip](https://github.com/wmyung/tailime/releases/download/v1.0.2/TailIME-1.0.2-macos.zip) on both your controller Mac (e.g. MacBook Air/Pro) and your remote Mac (e.g. Mac Pro / Mac Studio / Mac mini):
-
-```bash
-./install.sh --link-cli
-```
-
-- Because the default release bundle is ad-hoc signed, on first launch right-click `TailIME.app` → **Open** (or allow in **System Settings → Privacy & Security**).
-- Grant **Accessibility** permission (**System Settings → Privacy & Security → Accessibility → TailIME**) on both Macs.
+- **macOS:** Run **[TailIME-1.1.0-macos.pkg](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.pkg)**, drag from **[TailIME-1.1.0-macos.dmg](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-macos.dmg)**, or run `./install.sh --link-cli` from `TailIME-1.1.0-macos.zip`, then grant **Accessibility** permission under **System Settings → Privacy & Security → Accessibility → TailIME**.
+- **Windows 10/11:** Run **[TailIME-1.1.0-windows-x64-setup.exe](https://github.com/wmyung/tailime/releases/download/v1.1.0/TailIME-1.1.0-windows-x64-setup.exe)** (or `powershell -ExecutionPolicy Bypass -File .\install.ps1 -AddFirewall` from the portable ZIP) and approve the Tailscale-scoped UDP `39418` firewall rule when prompted.
 
 > **Developer Tip (Keep Accessibility Permission Across Rebuilds):** Run `./scripts/setup-local-cert.sh` once to create a local code-signing certificate in your Login Keychain, then build with `CODESIGN_IDENTITY="TailIME Local Signing" ./scripts/package-dist.sh`.
 
@@ -192,31 +200,46 @@ tailime-ctl quit                            # Quit TailIME cleanly
   - **Quick recovery:** If an existing session is already stuck on uncomposed Jamo, try pressing `Cmd+Tab` away and back (or clicking another window and back into the text box), or toggling Korean/English once to re-attach `KIM_Extension`. Minimizing RustDesk's floating incoming-connection window (`--cm`) on the remote Mac can also help reduce focus conflicts.
 - **RustDesk keyboard mode:** In **Translate mode**, RustDesk may inject characters via `CGEventKeyboardSetUnicodeString`, which can bypass macOS `KoreanIM` syllable composition. Switch RustDesk's toolbar keyboard icon to **Map mode** (and if needed, try toggling macOS **Input Source 1 / 2** in the same menu) while keeping TailIME's **Auto-English (ABC) lock on remote focus** enabled.
 
-### 6. Fast 10-Second Diagnostic Checklist
+### 6. Windows-Specific Troubleshooting (Firewall, UIPI, Korean Keyboard)
+- **Windows Defender Firewall blocking UDP `39418` (`daemonReachable: false`):** Re-run the installer and approve the firewall prompt, or run in an **Administrator PowerShell**:
+  ```powershell
+  netsh advfirewall firewall delete rule name=all program="$env:LOCALAPPDATA\TailIME\TailIME.exe"
+  netsh advfirewall firewall add rule name="TailIME (Tailscale UDP 39418)" dir=in action=allow protocol=UDP localport=39418 remoteip=100.64.0.0/10,fd7a:115c:a1e0::/48 program="$env:LOCALAPPDATA\TailIME\TailIME.exe" profile=any enable=yes
+  ```
+- **Elevated / Administrator window on Windows (`elevationBlocked: true`):** Windows UIPI prevents a standard-privilege `TailIME.exe` from switching IME inside an elevated Administrator window (e.g. Admin PowerShell or elevated Task Manager). Run `TailIME.exe` as Administrator if you need switching inside elevated windows.
+- **101-key English vs 103/106-key Korean keyboard on Windows:** Korean 103/106 layouts map Right Alt to `VK_HANGUL (0x15)`; English 101 layouts send `VK_RMENU (0xA5)`. Both are enabled by default in **TailIME Settings**, and standalone Right Alt taps suppress Windows menu-bar focus automatically.
+- **macOS `v1.1.0` Mac App Store Tailscale & direct IP pairing:** Even if the `tailscale` CLI is missing or sandboxed (common with Mac App Store Tailscale), `v1.1.0` discovers your local `utun*` Tailscale IPv4/IPv6 directly via `getifaddrs()`, binds UDP `39418` on that IP, accepts HMAC-authenticated peers without requiring CLI lookup, retries `pairHello` / `ping` automatically across cold WireGuard handshakes, and lets you enter any peer's `100.x.y.z` IP directly in **Settings → 원격 Tailscale → 직접 IP**.
+- **macOS `v1.1.0` non-blocking Keychain startup:** `v1.1.0` starts `tailime-ctl` IPC, menu bar, and local switching *before* reading Keychain asynchronously, so a buried macOS Keychain dialog on ad-hoc upgrades never causes `tailime-ctl status` to report "not running".
+
+### 7. Fast 10-Second Diagnostic Checklist
 ```bash
-tailime-ctl status   # Verify accessibility, hidTap, sessionTap, identityPersistent, triggers, conflictingApps, remoteFocused
-tailime-ctl peers    # Verify Tailscale peer online, direct path, and daemonReachable
+tailime-ctl status   # Verify permissions/hook, identityPersistent, triggers, boundUDP, remoteFocused
+tailime-ctl peers    # Verify Tailscale macOS & Windows peers online, direct path, and daemonReachable
 ```
-Or open **Menu Bar → 진단 및 실시간 키 테스트...** to inspect live keyCodes/modifier flags (displayed transiently in-memory only; never written to disk) and copy a sanitized diagnostic summary.
+Or open **Menu Bar / System Tray → 진단 및 실시간 키 테스트... / 설정 및 페어링...** to inspect status and copy a sanitized diagnostic summary.
 
 ---
 
 ## Build From Source
 
-Requires only macOS 13+ and Xcode Command Line Tools (`xcode-select --install`) — full Xcode.app is not required.
+- **macOS:** macOS 13+ and Xcode Command Line Tools (`xcode-select --install`) — full Xcode.app is not required.
+- **Windows (cross-compiled from macOS or built natively on Windows):** Go 1.27+ (`CGO_ENABLED=0`, zero external modules).
 
 ```bash
 git clone https://github.com/wmyung/tailime.git
 cd tailime
 
-# Run all 24 unit & live macOS loopback/CSystemBridge tests
+# Run all 24 macOS Swift tests & Go Windows core/coordinator tests
 swift run tailime-test
+(cd windows && go test ./...)
 
-# Build Universal (arm64 + x86_64) TailIME.app + distribution zip
-./scripts/package-dist.sh
+# Build macOS (.pkg + .dmg + .zip) AND Windows (-setup.exe + .zip) installers
+./scripts/package-all.sh
 ```
 
-Outputs are written to `dist/TailIME.app` and `dist/TailIME-1.0.2-macos.zip`.
+Outputs are written to `dist/`:
+- `dist/TailIME-1.1.0-macos.pkg`, `dist/TailIME-1.1.0-macos.dmg`, `dist/TailIME-1.1.0-macos.zip`
+- `dist/TailIME-1.1.0-windows-x64-setup.exe`, `dist/TailIME-1.1.0-windows-x64.zip`
 
 ---
 

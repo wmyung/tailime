@@ -9,3 +9,4 @@ dist/
 *.mobileprovision
 .swiftpm/xcode/
 xcuserdata/
+windows/cmd/tailime-setup/payload/

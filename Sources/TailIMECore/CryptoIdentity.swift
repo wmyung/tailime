@@ -166,13 +166,15 @@ public struct CryptoIdentity: Sendable {
         public let publicKeyBase64: String
         public let tailscaleIP: String?
         public let port: UInt16
+        public let os: String?
 
         public init(
             deviceID: String,
             name: String,
             publicKeyBase64: String,
             tailscaleIP: String?,
-            port: UInt16
+            port: UInt16,
+            os: String? = "macOS"
         ) {
             self.v = 1
             self.deviceID = deviceID
@@ -180,16 +182,18 @@ public struct CryptoIdentity: Sendable {
             self.publicKeyBase64 = publicKeyBase64
             self.tailscaleIP = tailscaleIP
             self.port = port
+            self.os = os
         }
     }
 
-    public func exportPairingToken(hostName: String, tailscaleIP: String?, port: UInt16) -> String? {
+    public func exportPairingToken(hostName: String, tailscaleIP: String?, port: UInt16, os: String = "macOS") -> String? {
         let payload = PairingTokenPayload(
             deviceID: deviceID,
             name: hostName,
             publicKeyBase64: publicKeyBase64,
             tailscaleIP: tailscaleIP,
-            port: port
+            port: port,
+            os: os
         )
         guard let data = try? JSONEncoder().encode(payload) else { return nil }
         let b64 = data.base64EncodedString()

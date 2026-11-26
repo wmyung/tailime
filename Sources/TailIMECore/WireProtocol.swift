@@ -32,6 +32,7 @@ public struct WireMessage: Codable, Equatable, Sendable {
     public var probeObserved: Bool?
     public var publicKeyBase64: String?
     public var pairReply: Bool?           // true when responding to initiator's pairHello so both sides show SAS simultaneously
+    public var senderOS: String?          // "macOS" or "windows" so CLI-less peers know remote OS safely
     public var version: String?
 
     public init(
@@ -51,6 +52,7 @@ public struct WireMessage: Codable, Equatable, Sendable {
         probeObserved: Bool? = nil,
         publicKeyBase64: String? = nil,
         pairReply: Bool? = nil,
+        senderOS: String? = nil,
         version: String? = nil
     ) {
         self.cmd = cmd
@@ -69,6 +71,7 @@ public struct WireMessage: Codable, Equatable, Sendable {
         self.probeObserved = probeObserved
         self.publicKeyBase64 = publicKeyBase64
         self.pairReply = pairReply
+        self.senderOS = senderOS
         self.version = version
     }
 }

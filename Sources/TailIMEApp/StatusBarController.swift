@@ -167,16 +167,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         targetMenu.addItem(autoItem)
         targetMenu.addItem(.separator())
 
-        let macPeers = p.tailscalePeers.filter(\.isMacOS)
-        if macPeers.isEmpty {
-            let none = NSMenuItem(title: "감지된 Tailscale Mac 피어 없음", action: nil, keyEquivalent: "")
+        let desktopPeers = p.tailscalePeers.filter(\.isTailIMESupportedOS)
+        if desktopPeers.isEmpty {
+            let none = NSMenuItem(title: "감지된 Tailscale Mac/Windows 피어 없음", action: nil, keyEquivalent: "")
             none.isEnabled = false
             targetMenu.addItem(none)
         } else {
-            for peer in macPeers {
+            for peer in desktopPeers {
                 let dot = peer.online ? "●" : "○"
                 let ip = peer.preferredIP ?? "-"
-                let item = NSMenuItem(title: "\(dot) \(peer.hostName) (\(ip))", action: #selector(handleSelectPeer(_:)), keyEquivalent: "")
+                let item = NSMenuItem(title: "\(dot) \(peer.hostName) [\(peer.osShortLabel)] (\(ip))", action: #selector(handleSelectPeer(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = peer.id
                 item.state = (p.pinnedPeerID == peer.id) ? .on : .off
@@ -187,7 +187,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         let refreshPeers = makeMenuItem(title: "Tailscale 피어 새로고침", symbol: "arrow.clockwise", action: #selector(handleRefreshTailscale))
         targetMenu.addItem(refreshPeers)
 
-        let targetRoot = makeMenuItem(title: "원격 대상 Mac 선택", symbol: "macbook.and.iphone", action: nil)
+        let targetRoot = makeMenuItem(title: "원격 대상 기기 선택 (Mac · Windows)", symbol: "macbook.and.iphone", action: nil)
         targetRoot.submenu = targetMenu
         menu.addItem(targetRoot)
 
