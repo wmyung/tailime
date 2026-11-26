@@ -18,23 +18,24 @@ swift run tailime-test
 
 echo "==> [2/5] Building release binaries..."
 STAGE_BIN="$(mktemp -d /tmp/tailime-bin.XXXXXX)"
+BUILD_FLAGS=(-c release -Xswiftc -file-prefix-map -Xswiftc "$ROOT_DIR/Sources=Sources" -Xcc "-ffile-prefix-map=$ROOT_DIR/Sources=Sources")
 if [[ "$UNIVERSAL" == "1" ]]; then
-  swift build -c release --triple arm64-apple-macosx13.0 --product TailIME
-  swift build -c release --triple arm64-apple-macosx13.0 --product tailime-ctl
-  ARM_DIR="$(swift build -c release --triple arm64-apple-macosx13.0 --show-bin-path)"
+  swift build "${BUILD_FLAGS[@]}" --triple arm64-apple-macosx13.0 --product TailIME
+  swift build "${BUILD_FLAGS[@]}" --triple arm64-apple-macosx13.0 --product tailime-ctl
+  ARM_DIR="$(swift build "${BUILD_FLAGS[@]}" --triple arm64-apple-macosx13.0 --show-bin-path)"
 
-  swift build -c release --triple x86_64-apple-macosx13.0 --product TailIME
-  swift build -c release --triple x86_64-apple-macosx13.0 --product tailime-ctl
-  X86_DIR="$(swift build -c release --triple x86_64-apple-macosx13.0 --show-bin-path)"
+  swift build "${BUILD_FLAGS[@]}" --triple x86_64-apple-macosx13.0 --product TailIME
+  swift build "${BUILD_FLAGS[@]}" --triple x86_64-apple-macosx13.0 --product tailime-ctl
+  X86_DIR="$(swift build "${BUILD_FLAGS[@]}" --triple x86_64-apple-macosx13.0 --show-bin-path)"
 
   lipo -create "$ARM_DIR/TailIME" "$X86_DIR/TailIME" -output "$STAGE_BIN/TailIME"
   lipo -create "$ARM_DIR/tailime-ctl" "$X86_DIR/tailime-ctl" -output "$STAGE_BIN/tailime-ctl"
   MAIN_BIN="$STAGE_BIN/TailIME"
   CLI_BIN="$STAGE_BIN/tailime-ctl"
 else
-  swift build -c release --product TailIME
-  swift build -c release --product tailime-ctl
-  BIN_DIR="$(swift build -c release --show-bin-path)"
+  swift build "${BUILD_FLAGS[@]}" --product TailIME
+  swift build "${BUILD_FLAGS[@]}" --product tailime-ctl
+  BIN_DIR="$(swift build "${BUILD_FLAGS[@]}" --show-bin-path)"
   MAIN_BIN="$BIN_DIR/TailIME"
   CLI_BIN="$BIN_DIR/tailime-ctl"
 fi
@@ -47,6 +48,7 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Helpers" "$APP_BUNDL
 
 cp "$MAIN_BIN" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$CLI_BIN"  "$APP_BUNDLE/Contents/Helpers/tailime-ctl"
+strip -S "$APP_BUNDLE/Contents/MacOS/$APP_NAME" "$APP_BUNDLE/Contents/Helpers/tailime-ctl"
 chmod 755 "$APP_BUNDLE/Contents/MacOS/$APP_NAME" "$APP_BUNDLE/Contents/Helpers/tailime-ctl"
 
 # Generate AppIcon.icns
