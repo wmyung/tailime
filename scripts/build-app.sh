@@ -6,8 +6,8 @@ cd "$ROOT_DIR"
 
 APP_NAME="TailIME"
 BUNDLE_ID="com.tailime.app"
-VERSION="${TAILIME_VERSION:-1.0.0}"
-BUILD_NUMBER="${TAILIME_BUILD_NUMBER:-1}"
+VERSION="${TAILIME_VERSION:-1.0.1}"
+BUILD_NUMBER="${TAILIME_BUILD_NUMBER:-2}"
 OUT_DIR="${TAILIME_OUT_DIR:-$ROOT_DIR/dist}"
 APP_BUNDLE="$OUT_DIR/$APP_NAME.app"
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
@@ -18,6 +18,8 @@ swift run tailime-test
 
 echo "==> [2/5] Building release binaries..."
 STAGE_BIN="$(mktemp -d /tmp/tailime-bin.XXXXXX)"
+TMP_ICON_DIR=""
+trap 'rm -rf "$STAGE_BIN" ${TMP_ICON_DIR:+"$TMP_ICON_DIR"}' EXIT
 BUILD_FLAGS=(-c release -Xswiftc -file-prefix-map -Xswiftc "$ROOT_DIR/Sources=Sources" -Xcc "-ffile-prefix-map=$ROOT_DIR/Sources=Sources")
 if [[ "$UNIVERSAL" == "1" ]]; then
   swift build "${BUILD_FLAGS[@]}" --triple arm64-apple-macosx13.0 --product TailIME
@@ -53,7 +55,6 @@ chmod 755 "$APP_BUNDLE/Contents/MacOS/$APP_NAME" "$APP_BUNDLE/Contents/Helpers/t
 
 # Generate AppIcon.icns
 TMP_ICON_DIR="$(mktemp -d /tmp/tailime-icon.XXXXXX)"
-trap 'rm -rf "$TMP_ICON_DIR" "$STAGE_BIN"' EXIT
 swift "$ROOT_DIR/scripts/generate-icon.swift" "$TMP_ICON_DIR/AppIcon.iconset"
 iconutil -c icns "$TMP_ICON_DIR/AppIcon.iconset" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 

@@ -8,7 +8,7 @@
 [![Arch](https://img.shields.io/badge/arch-Universal%20(arm64%20%2B%20x86__64)-blue)](https://github.com/wmyung/tailime/releases/latest)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero%20external%20packages-brightgreen)](#소스에서-빌드)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Download](https://img.shields.io/badge/Download-TailIME--1.0.0--macos.zip-0071e3)](https://github.com/wmyung/tailime/releases/download/v1.0.0/TailIME-1.0.0-macos.zip)
+[![Download](https://img.shields.io/badge/Download-TailIME--1.0.1--macos.zip-0071e3)](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip)
 
 ---
 
@@ -25,11 +25,11 @@ Mac 사용자(특히 **Karabiner-Elements**로 우측 `⌘`/`⌥`를 `F18`/`F19`
 
 ## 바로 다운로드 & 설치
 
-- **[TailIME-1.0.0-macos.zip 다운로드 (Universal arm64 + x86_64)](https://github.com/wmyung/tailime/releases/download/v1.0.0/TailIME-1.0.0-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.0.0/TailIME-1.0.0-macos.zip.sha256))
+- **[TailIME-1.0.1-macos.zip 다운로드 (Universal arm64 + x86_64)](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip.sha256))
 
 ```bash
-unzip TailIME-1.0.0-macos.zip
-cd TailIME-1.0.0
+unzip TailIME-1.0.1-macos.zip
+cd TailIME-1.0.1
 ./install.sh --link-cli
 ```
 
@@ -97,6 +97,37 @@ tailime-ctl remote-set 100.64.0.10 ko
 tailime-ctl pair-export
 echo "TKP1:..." | tailime-ctl pair-import
 ```
+
+---
+
+## 트러블슈팅 (문제 해결)
+
+### 1. RustDesk · 화면공유에서 한영키를 눌러도 원격 Mac이 바뀌지 않을 때
+- **양쪽 Mac 손쉬운 사용 권한 확인:** 양쪽 Mac에서 `tailime-ctl status`를 실행해 `accessibility: true`, `hidTap: true`, `sessionTap: true`인지 확인하세요.
+- **Tailscale 페어링 및 통신 확인:** `tailime-ctl peers`에서 원격 Mac의 `daemonReachable: true`를 확인하세요. `false`라면 **설정 → 원격 Tailscale**에서 6자리 SAS 직접 페어링 또는 `TKP1` 토큰 교환을 완료해야 합니다.
+- **메뉴바 `⚡` 표시 확인:** RustDesk 창을 클릭했을 때 메뉴바가 **`⚡한` / `⚡EN`**으로 바뀌어야 원격 제어 상태로 인식된 것입니다. 일반 `한`/`EN`만 보이면 메뉴바 **원격 대상 Mac 선택**에서 대상 Mac을 직접 고정(Pin)하거나 RustDesk Direct IP 연결을 사용하세요.
+- **중복 한영 전환 앱 종료:** **`gksdud`**, **`HangulSync`**, **Input Source Pro**, **Kawa** 등이 동시에 켜져 있으면 같은 이벤트 탭을 먼저 가로채 충돌합니다. `tailime-ctl status`의 `conflictingApps` 또는 **설정 → 진단** 탭에서 충돌 앱을 확인하고 종료해 주세요.
+
+### 2. 한영키를 누른 뒤 창 최대화, Dock 선택 등 엉뚱한 단축키가 실행될 때
+- **양쪽 Mac 모두 `v1.0.1` 이상으로 업데이트:** `v1.0.1`은 합성 키 입력 시 `Fn(Globe)` / 모디파이어 플래그가 macOS WindowServer에 남는 문제를 원천 차단하고, 기본 전송 방식을 **Tailscale UDP 직접 전송**으로 설정해 RustDesk에 보조 F키(`F16`/`F17`/`F20`)를 주입하지 않습니다.
+- **RustDesk 권장 설정:** **설정 → 원격 Tailscale → 전송 방식**을 **Tailscale UDP 직접 전송 (권장 · RustDesk 안전)**으로 유지하세요.
+- **`v1.0.0`에서 이미 `Fn(Globe)` 키가 걸린 경우:** 양쪽 Mac에서 물리 키보드의 `Fn(Globe)` 키를 한 번 눌렀다 뗀 뒤 `v1.0.1`로 업데이트하세요.
+
+### 3. 다양한 한영키(좌/우 `Control`, `Ctrl+Space`, `Cmd+Space`, `Shift+Space`, `Caps Lock`, Karabiner `to_if_alone` 등)가 안 먹힐 때
+- **설정 → 한영키** 탭에서 원하는 프리셋(모든 좌/우 `Control`·`Option`·`Command`·`Shift` 단독 탭 및 `*+Space` 조합 포함)을 추가하거나 **한영키 직접 녹화...**로 직접 등록하세요.
+- macOS 기본 **`Caps Lock(한/A)`** 사용 시: *시스템 설정 → 키보드 → 입력 소스 → 'Caps Lock 키를 사용하여 ABC 입력 소스로 전환'*이 켜져 있는지, Karabiner에서 `caps_lock`을 다른 키로 덮어쓰지 않았는지 확인하세요.
+- **암호 입력 보호(Secure Input):** 터미널 `sudo`, 1Password, 잠금 화면 등 암호 입력창이 열려 있으면 macOS 보안 정책상 모든 이벤트 탭이 일시 차단됩니다. 메뉴바와 **진단** 탭에 표시되는 앱의 암호 입력창을 닫으면 즉시 복구됩니다.
+
+### 4. 업데이트·재빌드 후 손쉬운 사용 토글은 켜져 있는데 동작하지 않을 때
+- Ad-hoc 서명 앱은 바이너리가 교체되면 macOS TCC가 이전 서명을 기억해 권한이 무효화될 수 있습니다. **[시스템 설정 → 개인정보 보호 및 보안 → 손쉬운 사용]**에서 `TailIME`을 선택해 **`-` 버튼으로 제거한 뒤 `+`로 `/Applications/TailIME.app`을 다시 추가**하세요.
+- 소스에서 자주 재빌드한다면 `./scripts/setup-local-cert.sh`로 로컬 인증서를 1회 생성해 서명하면 권한이 유지됩니다.
+
+### 5. 10초 빠른 진단
+```bash
+tailime-ctl status   # 권한, 이벤트 탭, 감지된 트리거, 충돌 앱(conflictingApps), 원격 인식 상태 확인
+tailime-ctl peers    # Tailscale 온라인/Direct 경로 및 상대 TailIME 응답(daemonReachable) 확인
+```
+또는 메뉴바 **진단 및 실시간 키 테스트...**를 열어 키 입력 시 실제로 들어오는 키코드·플래그를 실시간으로 확인할 수 있습니다.
 
 ---
 

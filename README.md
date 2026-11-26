@@ -9,7 +9,7 @@
 [![Runtime](https://img.shields.io/badge/runtime-native%20Swift%20%2B%20AppKit-orange)](#architecture)
 [![Dependencies](https://img.shields.io/badge/dependencies-zero%20external%20packages-brightgreen)](#build-from-source)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![Download](https://img.shields.io/badge/Download-TailIME--1.0.0--macos.zip-0071e3)](https://github.com/wmyung/tailime/releases/download/v1.0.0/TailIME-1.0.0-macos.zip)
+[![Download](https://img.shields.io/badge/Download-TailIME--1.0.1--macos.zip-0071e3)](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip)
 
 ---
 
@@ -26,11 +26,11 @@ Install `TailIME.app` on both Macs, pair in 10 seconds with a 6-digit SAS code, 
 
 Download the Universal (`arm64` + `x86_64`) package from GitHub Releases:
 
-- **[TailIME-1.0.0-macos.zip](https://github.com/wmyung/tailime/releases/download/v1.0.0/TailIME-1.0.0-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.0.0/TailIME-1.0.0-macos.zip.sha256))
+- **[TailIME-1.0.1-macos.zip](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip)** ([SHA-256](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip.sha256))
 
 ```bash
-unzip TailIME-1.0.0-macos.zip
-cd TailIME-1.0.0
+unzip TailIME-1.0.1-macos.zip
+cd TailIME-1.0.1
 ./install.sh --link-cli
 ```
 
@@ -97,7 +97,7 @@ flowchart LR
 
 ### 1. Install on Both Macs
 
-Install [TailIME-1.0.0-macos.zip](https://github.com/wmyung/tailime/releases/download/v1.0.0/TailIME-1.0.0-macos.zip) on both your controller Mac (e.g. MacBook Air/Pro) and your remote Mac (e.g. Mac Pro / Mac Studio / Mac mini):
+Install [TailIME-1.0.1-macos.zip](https://github.com/wmyung/tailime/releases/download/v1.0.1/TailIME-1.0.1-macos.zip) on both your controller Mac (e.g. MacBook Air/Pro) and your remote Mac (e.g. Mac Pro / Mac Studio / Mac mini):
 
 ```bash
 ./install.sh --link-cli
@@ -161,6 +161,37 @@ tailime-ctl quit                            # Quit TailIME cleanly
 
 ---
 
+## Troubleshooting
+
+### 1. Pressing the switch key inside RustDesk / Screen Sharing does not switch the remote Mac
+- **Check Accessibility on BOTH Macs:** Run `tailime-ctl status` on both Macs and verify `accessibility: true`, `hidTap: true`, and `sessionTap: true`.
+- **Check Tailscale pairing & reachability:** Run `tailime-ctl peers` and confirm the remote Mac shows `daemonReachable: true`. If not, pair both Macs under **Settings → 원격 Tailscale** (6-digit SAS or `TKP1` token exchange).
+- **Check the menu bar indicator:** When focused on RustDesk/Screen Sharing, the menu bar should show **`⚡한`** / **`⚡EN`**. If it shows plain `한`/`EN`, TailIME hasn't matched the remote window yet — select the remote Mac manually from **Menu Bar → 원격 대상 Mac 선택**, or verify Tailscale Direct IP is enabled in RustDesk.
+- **Quit competing IME switchers:** Running **`gksdud`**, **`HangulSync`**, **Input Source Pro**, or **Kawa** alongside TailIME causes `CGEventTap` conflicts (the competing app can swallow `F18`/`F19` before TailIME sees it). Check `conflictingApps` in `tailime-ctl status` or the **Diagnostics** tab and quit competing utilities.
+
+### 2. Pressing the switch key triggers unexpected shortcuts (window maximize, Dock focus, etc.)
+- **Update both Macs to `v1.0.1` or later:** `v1.0.1` eliminates synthetic `maskSecondaryFn` (`Fn/Globe`) modifier latching on `keyUp` and uses **Tailscale UDP Direct** by default (never injecting synthetic `F16`/`F17`/`F20` keys into RustDesk, whose `rdev`/`enigo` macOS keycode translation can mis-map extended F-keys).
+- **Recommended transport setting for RustDesk:** Keep **Settings → 원격 Tailscale → 전송 방식** set to **Tailscale UDP 직접 전송 (권장 · RustDesk 안전)**.
+- **If `Fn/Globe` was stuck from `v1.0.0`:** Tap the physical `Fn (Globe)` key once on each Mac, then update to `v1.0.1`.
+
+### 3. Custom switch keys (`Left/Right Control`, `Ctrl+Space`, `Cmd+Space`, `Shift+Space`, `Caps Lock`, Karabiner `to_if_alone`) are not detected
+- Open **Settings → 한영키** and either pick a preset (supports all left/right `Control`, `Option`, `Command`, `Shift` standalone taps and `*+Space` combos) or click **한영키 직접 녹화...** to capture your exact key.
+- For macOS native **`Caps Lock (한/A)`**, confirm *System Settings → Keyboard → Input Sources → Use the Caps Lock key to switch to and from ABC* is enabled and not overridden by Karabiner.
+- **Secure Input active:** When a password field (`sudo` in Terminal, 1Password, login prompt) enables macOS Secure Input, macOS blocks all event taps by design. TailIME displays the blocking app in the menu bar and **Diagnostics** tab — close that prompt to resume automatically.
+
+### 4. Accessibility toggle is ON after updating/rebuilding, yet keys stop working
+- Ad-hoc signed macOS builds change their code signature hash on rebuild, causing macOS TCC to hold a stale grant. Open **System Settings → Privacy & Security → Accessibility**, select `TailIME`, click **`-`** to remove it, then click **`+`** to re-add `/Applications/TailIME.app`.
+- If you rebuild frequently from source, run `./scripts/setup-local-cert.sh` once and build with `CODESIGN_IDENTITY="TailIME Local Signing" ./scripts/package-dist.sh` so permissions persist across rebuilds.
+
+### 5. Fast 10-Second Diagnostic Checklist
+```bash
+tailime-ctl status   # Verify accessibility, hidTap, sessionTap, triggers, conflictingApps, remoteFocused
+tailime-ctl peers    # Verify Tailscale peer online, direct path, and daemonReachable
+```
+Or open **Menu Bar → 진단 및 실시간 키 테스트...** to inspect live keyCodes/modifier flags (displayed transiently in-memory only; never written to disk) and copy a sanitized diagnostic summary.
+
+---
+
 ## Build From Source
 
 Requires only macOS 13+ and Xcode Command Line Tools (`xcode-select --install`) — full Xcode.app is not required.
@@ -169,14 +200,14 @@ Requires only macOS 13+ and Xcode Command Line Tools (`xcode-select --install`) 
 git clone https://github.com/wmyung/tailime.git
 cd tailime
 
-# Run all 20 unit & live macOS loopback/CSystemBridge tests
+# Run all 22 unit & live macOS loopback/CSystemBridge tests
 swift run tailime-test
 
 # Build Universal (arm64 + x86_64) TailIME.app + distribution zip
 ./scripts/package-dist.sh
 ```
 
-Outputs are written to `dist/TailIME.app` and `dist/TailIME-1.0.0-macos.zip`.
+Outputs are written to `dist/TailIME.app` and `dist/TailIME-1.0.1-macos.zip`.
 
 ---
 

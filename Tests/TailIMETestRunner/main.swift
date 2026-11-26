@@ -346,6 +346,150 @@ runTest("TriggerResolver preserves macOS Hotkey 61 untouched when Hotkey 60 is e
     try expect(!resolved.contains { $0.keyCode == VirtualKeyCode.space }, "Hotkey 61 must stay untouched when Hotkey 60 is enabled")
 }
 
+runTest("Caps Lock observed trigger tracks physical down/up, supports rapid double-taps, and ignores long-press or chords") {
+    let capsSpec = TriggerSpec(keyCode: VirtualKeyCode.capsLock, modifiers: [], kind: .systemObserved, origin: .systemHotkey)
+    var matcher = TriggerMatcher(triggers: [capsSpec])
+
+    // 1. Clean short tap (down -> up within 400ms, alphaShift unchanged): fires ONCE on release
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: 0, isKeyPhysicallyDown: true, timestamp: 10.00
+    )), .passThrough)
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: 0, isKeyPhysicallyDown: false, timestamp: 10.07
+    )), .fireObserved(capsSpec))
+
+    // 2. Rapid second tap 110ms later STILL fires cleanly (not dropped by fixed cooldown!)
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: 0, isKeyPhysicallyDown: true, timestamp: 10.18
+    )), .passThrough)
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: 0, isKeyPhysicallyDown: false, timestamp: 10.25
+    )), .fireObserved(capsSpec))
+
+    // 3. Slower 260ms short tap fires ONCE (never double-fires!)
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: 0, isKeyPhysicallyDown: true, timestamp: 11.00
+    )), .passThrough)
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: 0, isKeyPhysicallyDown: false, timestamp: 11.26
+    )), .fireObserved(capsSpec))
+
+    // 4. Long press toggles actual Caps Lock LED mid-hold (maskAlphaShift flips false -> true): must NOT fire!
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: 0, isKeyPhysicallyDown: true, timestamp: 12.00
+    )), .passThrough)
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: CGEventFlags.maskAlphaShift.rawValue, isKeyPhysicallyDown: true, timestamp: 12.45
+    )), .passThrough)
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: CGEventFlags.maskAlphaShift.rawValue, isKeyPhysicallyDown: false, timestamp: 12.60
+    )), .passThrough)
+
+    // 5. Chord (Caps Lock held + another key pressed): cancelled, must NOT fire on release
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: CGEventFlags.maskAlphaShift.rawValue, isKeyPhysicallyDown: true, timestamp: 13.00
+    )), .passThrough)
+    _ = matcher.process(KeyEventSample(kind: .keyDown, keyCode: 0, modifiers: [], timestamp: 13.05))
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: CGEventFlags.maskAlphaShift.rawValue, isKeyPhysicallyDown: false, timestamp: 13.12
+    )), .passThrough)
+
+    // 6. Caps Lock already ON at launch (fresh matcher): first short tap still fires!
+    let fnSpec = TriggerSpec(keyCode: VirtualKeyCode.functionKey, modifiers: [], kind: .systemObserved, origin: .systemHotkey)
+    var freshMatcher = TriggerMatcher(triggers: [capsSpec, fnSpec])
+    try expectEqual(freshMatcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: CGEventFlags.maskAlphaShift.rawValue, isKeyPhysicallyDown: true, timestamp: 14.00
+    )), .passThrough)
+    try expectEqual(freshMatcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: CGEventFlags.maskAlphaShift.rawValue, isKeyPhysicallyDown: false, timestamp: 14.08
+    )), .fireObserved(capsSpec))
+
+    // 7. Caps Lock + Fn/Globe chord: Fn cancels pending Caps tap so releasing Caps does NOT fire a second time
+    try expectEqual(freshMatcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: CGEventFlags.maskAlphaShift.rawValue, isKeyPhysicallyDown: true, timestamp: 15.00
+    )), .passThrough)
+    _ = freshMatcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.functionKey,
+        modifiers: [], rawFlags: CGEventFlags.maskSecondaryFn.rawValue, timestamp: 15.04
+    ))
+    try expectEqual(freshMatcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.capsLock,
+        modifiers: [], rawFlags: CGEventFlags.maskAlphaShift.rawValue, isKeyPhysicallyDown: false, timestamp: 15.10
+    )), .passThrough)
+}
+
+runTest("All left/right control & modifier keys work for standalone tap, Karabiner parsing, and Shift rollover") {
+    // 1. Standalone Left Control & Right Shift taps
+    let lCtrlSpec = TriggerSpec(keyCode: VirtualKeyCode.leftControl, modifiers: [], kind: .modifierTap, origin: .userPreset)
+    let rShiftSpec = TriggerSpec(keyCode: VirtualKeyCode.rightShift, modifiers: [], kind: .modifierTap, origin: .userPreset)
+    let f18Spec = TriggerSpec(keyCode: VirtualKeyCode.f18, modifiers: [], kind: .ownedKey, origin: .karabiner)
+    var matcher = TriggerMatcher(triggers: [lCtrlSpec, rShiftSpec, f18Spec])
+
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.leftControl,
+        modifiers: [.control], rawFlags: CGEventFlags.maskControl.rawValue | 0x01, timestamp: 20.0
+    )), .passThrough)
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.leftControl,
+        modifiers: [], rawFlags: 0, timestamp: 20.12
+    )), .fireObserved(lCtrlSpec))
+
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.rightShift,
+        modifiers: [.shift], rawFlags: CGEventFlags.maskShift.rawValue | 0x04, timestamp: 21.0
+    )), .passThrough)
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .flagsChanged, keyCode: VirtualKeyCode.rightShift,
+        modifiers: [], rawFlags: 0, timestamp: 21.10
+    )), .fireObserved(rShiftSpec))
+
+    // 2. Intentional fresh Shift+F18 stays passThrough; Shift rollover right after typing Shift+A triggers F18; Cmd+F18 stays untouched
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .keyDown, keyCode: VirtualKeyCode.f18, modifiers: [.shift], timestamp: 21.8
+    )), .passThrough)
+    _ = matcher.process(KeyEventSample(kind: .keyDown, keyCode: 0, modifiers: [.shift], timestamp: 21.95)) // typing 'A'
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .keyDown, keyCode: VirtualKeyCode.f18, modifiers: [.shift], timestamp: 22.0
+    )), .fireOwned(f18Spec))
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .keyUp, keyCode: VirtualKeyCode.f18, modifiers: [], timestamp: 22.05
+    )), .swallowOnly)
+    try expectEqual(matcher.process(KeyEventSample(
+        kind: .keyDown, keyCode: VirtualKeyCode.f18, modifiers: [.command], timestamp: 22.2
+    )), .passThrough)
+
+    // 3. Karabiner parser detects left_control -> f18 and right_shift -> lang1
+    let karJSON = """
+    {
+      "profiles": [{
+        "name": "Dev",
+        "selected": true,
+        "simple_modifications": [
+          { "from": { "key_code": "left_control" }, "to": [{ "key_code": "f18" }] },
+          { "from": { "key_code": "right_shift" }, "to": [{ "key_code": "lang1" }] }
+        ]
+      }]
+    }
+    """
+    let parsed = KarabinerConfigParser.parse(data: Data(karJSON.utf8))
+    try expect(parsed.detectedTriggers.contains { $0.keyCode == VirtualKeyCode.f18 })
+    try expect(parsed.detectedTriggers.contains { $0.keyCode == VirtualKeyCode.lang1Hangul })
+}
+
 // MARK: - 3. HoldGate FIFO Invariants
 
 print("\nSuite 3: HoldGate FIFO Invariants")
@@ -453,16 +597,25 @@ runTest("Tailscale JSON parsing and IPv4/IPv6/interface validation") {
     try expect(TailscaleIPValidator.isAllowedInterfaceName("lo0", sourceIP: "127.0.0.1"))
 }
 
-runTest("SocketInspector excludes RustDesk server daemons and listening sockets, keeps IPv4/IPv6 clients") {
+runTest("SocketInspector excludes RustDesk server daemons and listening sockets, normalizes dual-stack IPv6/IPv4 clients") {
+    try expectEqual(SocketInspector.normalizeIP("::100.64.0.10"), "100.64.0.10")
+    try expectEqual(SocketInspector.normalizeIP("::ffff:100.64.0.10"), "100.64.0.10")
+    try expectEqual(SocketInspector.normalizeIP("::FFFF:100.64.0.20"), "100.64.0.20")
+    try expectEqual(SocketInspector.normalizeIP("fd7a:115c:a1e0::30"), "fd7a:115c:a1e0::30")
+    try expectEqual(SocketInspector.normalizeIP("::1"), "::1")
+
     let sockets: [ActiveSocketEntry] = [
         ActiveSocketEntry(pid: 1075, isTCP: true, isEstablished: false, isListen: true,
                           localIP: "0.0.0.0", localPort: 21118, remoteIP: "0.0.0.0", remotePort: 0,
                           processCommandLine: "/Applications/RustDesk.app/Contents/MacOS/RustDesk --server"),
         ActiveSocketEntry(pid: 1075, isTCP: true, isEstablished: true, isListen: false,
-                          localIP: "100.64.0.10", localPort: 21118, remoteIP: "100.64.0.20", remotePort: 59417,
+                          localIP: "::100.64.0.10", localPort: 21118, remoteIP: "::100.64.0.20", remotePort: 59417,
                           processCommandLine: "/Applications/RustDesk.app/Contents/MacOS/RustDesk --server"),
         ActiveSocketEntry(pid: 2048, isTCP: true, isEstablished: true, isListen: false,
-                          localIP: "100.64.0.20", localPort: 59417, remoteIP: "100.64.0.10", remotePort: 21118,
+                          localIP: "::100.64.0.20", localPort: 59417, remoteIP: "::100.64.0.10", remotePort: 21118,
+                          processCommandLine: "/Applications/RustDesk.app/Contents/MacOS/RustDesk"),
+        ActiveSocketEntry(pid: 2049, isTCP: true, isEstablished: true, isListen: false,
+                          localIP: "::ffff:100.64.0.20", localPort: 59419, remoteIP: "::ffff:100.64.0.15", remotePort: 21118,
                           processCommandLine: "/Applications/RustDesk.app/Contents/MacOS/RustDesk"),
         ActiveSocketEntry(pid: 2048, isTCP: true, isEstablished: true, isListen: false,
                           localIP: "fd7a:115c:a1e0::20", localPort: 59418,
@@ -473,7 +626,7 @@ runTest("SocketInspector excludes RustDesk server daemons and listening sockets,
         sockets: sockets,
         selfIPs: ["100.64.0.20", "fd7a:115c:a1e0::20"]
     )
-    try expectEqual(filtered, ["100.64.0.10", "fd7a:115c:a1e0::30"])
+    try expectEqual(filtered, ["100.64.0.10", "100.64.0.15", "fd7a:115c:a1e0::30"])
 }
 
 runTest("Four-tier remote target resolver and safe fallback policy") {

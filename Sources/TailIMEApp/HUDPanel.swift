@@ -5,6 +5,7 @@ import TailIMECore
 /// (or optionally locally). Never steals keyboard focus from RustDesk or any active window.
 final class HUDPanelController {
     private var panel: NSPanel?
+    private let badgeContainer = NSView()
     private let badgeLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
@@ -45,7 +46,7 @@ final class HUDPanelController {
 
             self.badgeLabel.stringValue = badge
             self.badgeLabel.textColor = .white
-            self.badgeLabel.layer?.backgroundColor = badgeColor.cgColor
+            self.badgeContainer.layer?.backgroundColor = badgeColor.cgColor
 
             self.titleLabel.stringValue = title
             self.detailLabel.stringValue = detail
@@ -56,8 +57,8 @@ final class HUDPanelController {
             panel.alphaValue = 0.0
             panel.orderFrontRegardless()
             NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.12
-                panel.animator().alphaValue = 0.96
+                ctx.duration = 0.11
+                panel.animator().alphaValue = 0.97
             }
 
             let work = DispatchWorkItem { [weak self] in
@@ -104,19 +105,22 @@ final class HUDPanelController {
         effect.layer?.borderWidth = 0.5
         effect.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
 
-        badgeLabel.font = .systemFont(ofSize: 16, weight: .bold)
+        badgeContainer.wantsLayer = true
+        badgeContainer.layer?.cornerRadius = 10
+        badgeContainer.layer?.masksToBounds = true
+        badgeContainer.translatesAutoresizingMaskIntoConstraints = false
+
+        badgeLabel.font = .systemFont(ofSize: 15, weight: .bold)
         badgeLabel.alignment = .center
-        badgeLabel.wantsLayer = true
-        badgeLabel.layer?.cornerRadius = 9
-        badgeLabel.layer?.masksToBounds = true
         badgeLabel.translatesAutoresizingMaskIntoConstraints = false
+        badgeContainer.addSubview(badgeLabel)
 
         titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        detailLabel.font = .systemFont(ofSize: 11, weight: .regular)
+        detailLabel.font = .systemFont(ofSize: 11, weight: .medium)
         detailLabel.textColor = .secondaryLabelColor
         detailLabel.lineBreakMode = .byTruncatingTail
         detailLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -124,19 +128,22 @@ final class HUDPanelController {
         let textStack = NSStackView(views: [titleLabel, detailLabel])
         textStack.orientation = .vertical
         textStack.alignment = .leading
-        textStack.spacing = 1
+        textStack.spacing = 1.5
         textStack.translatesAutoresizingMaskIntoConstraints = false
 
-        effect.addSubview(badgeLabel)
+        effect.addSubview(badgeContainer)
         effect.addSubview(textStack)
 
         NSLayoutConstraint.activate([
-            badgeLabel.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: 12),
-            badgeLabel.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
-            badgeLabel.widthAnchor.constraint(equalToConstant: 42),
-            badgeLabel.heightAnchor.constraint(equalToConstant: 32),
+            badgeContainer.leadingAnchor.constraint(equalTo: effect.leadingAnchor, constant: 11),
+            badgeContainer.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
+            badgeContainer.widthAnchor.constraint(equalToConstant: 44),
+            badgeContainer.heightAnchor.constraint(equalToConstant: 34),
 
-            textStack.leadingAnchor.constraint(equalTo: badgeLabel.trailingAnchor, constant: 10),
+            badgeLabel.centerXAnchor.constraint(equalTo: badgeContainer.centerXAnchor),
+            badgeLabel.centerYAnchor.constraint(equalTo: badgeContainer.centerYAnchor),
+
+            textStack.leadingAnchor.constraint(equalTo: badgeContainer.trailingAnchor, constant: 11),
             textStack.trailingAnchor.constraint(equalTo: effect.trailingAnchor, constant: -12),
             textStack.centerYAnchor.constraint(equalTo: effect.centerYAnchor),
         ])

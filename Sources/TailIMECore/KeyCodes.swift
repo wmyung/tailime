@@ -42,11 +42,50 @@ public enum VirtualKeyCode {
         rightCommand, rightOption, rightControl
     ]
 
+    public static let standaloneModifierTapKeys: Set<Int64> = [
+        leftCommand, rightCommand,
+        leftOption, rightOption,
+        leftControl, rightControl,
+        leftShift, rightShift
+    ]
+
+    public static let dedicatedSingleSwitchKeys: Set<Int64> = functionKeys.union([
+        lang1Hangul, lang2Eisu
+    ])
+
     public static let allModifierKeys: Set<Int64> = [
         leftCommand, rightCommand, leftOption, rightOption,
         leftControl, rightControl, leftShift, rightShift,
         capsLock, functionKey, globe
     ]
+
+    /// Reads the live physical keyboard matrix via `.hidSystemState` for all 8 standard modifiers
+    /// plus real Caps Lock state, intentionally omitting `.maskSecondaryFn` so synthetic `keyUp`
+    /// events NEVER latch Globe/Fn or unheld modifiers in macOS WindowServer while preserving any
+    /// modifier the user is genuinely still holding physically (e.g. holding Ctrl across Ctrl+Space).
+    public static func currentPhysicalModifierFlags() -> CGEventFlags {
+        var flags = CGEventFlags()
+        if CGEventSource.keyState(.hidSystemState, key: CGKeyCode(leftCommand))
+            || CGEventSource.keyState(.hidSystemState, key: CGKeyCode(rightCommand)) {
+            flags.insert(.maskCommand)
+        }
+        if CGEventSource.keyState(.hidSystemState, key: CGKeyCode(leftControl))
+            || CGEventSource.keyState(.hidSystemState, key: CGKeyCode(rightControl)) {
+            flags.insert(.maskControl)
+        }
+        if CGEventSource.keyState(.hidSystemState, key: CGKeyCode(leftOption))
+            || CGEventSource.keyState(.hidSystemState, key: CGKeyCode(rightOption)) {
+            flags.insert(.maskAlternate)
+        }
+        if CGEventSource.keyState(.hidSystemState, key: CGKeyCode(leftShift))
+            || CGEventSource.keyState(.hidSystemState, key: CGKeyCode(rightShift)) {
+            flags.insert(.maskShift)
+        }
+        if CGEventSource.flagsState(.combinedSessionState).contains(.maskAlphaShift) {
+            flags.insert(.maskAlphaShift)
+        }
+        return flags
+    }
 
     public static func displayName(for keyCode: Int64) -> String {
         switch keyCode {

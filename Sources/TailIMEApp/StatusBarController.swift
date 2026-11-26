@@ -8,6 +8,7 @@ struct StatusBarPresentation {
     let paused: Bool
     let accessibilityGranted: Bool
     let secureInputAppName: String?
+    let conflictingApps: [String]
     let remoteContext: ActiveRemoteContext
     let remotePeerState: RemotePeerRuntimeState?
     let tailscalePeers: [TailscalePeer]
@@ -40,7 +41,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     func update(_ presentation: StatusBarPresentation) {
         latestPresentation = presentation
 
-        let warning = !presentation.accessibilityGranted || presentation.secureInputAppName != nil
+        let warning = !presentation.accessibilityGranted
+            || presentation.secureInputAppName != nil
+            || !presentation.conflictingApps.isEmpty
         let remoteActive = presentation.remoteContext.hasActiveRemoteSession
 
         let badgeText: String
@@ -86,22 +89,31 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         menu.removeAllItems()
         guard let p = latestPresentation else { return }
 
-        // 1. Accessibility / Secure Input Warnings
+        // 1. Accessibility / Conflict / Secure Input Warnings
         if !p.accessibilityGranted {
-            let item = NSMenuItem(
-                title: "⚠ 손쉬운 사용(접근성) 권한 필요 — 클릭하여 열기",
-                action: #selector(handleRequestAccessibility),
-                keyEquivalent: ""
+            let item = makeMenuItem(
+                title: "손쉬운 사용(접근성) 권한 필요 — 클릭하여 열기",
+                symbol: "exclamationmark.triangle.fill",
+                action: #selector(handleRequestAccessibility)
             )
-            item.target = self
+            menu.addItem(item)
+            menu.addItem(.separator())
+        }
+        if !p.conflictingApps.isEmpty {
+            let list = p.conflictingApps.joined(separator: ", ")
+            let item = makeMenuItem(
+                title: "충돌 가능 앱 실행 중: \(list) (종료 권장)",
+                symbol: "exclamationmark.circle.fill",
+                action: #selector(handleOpenDiagnostics)
+            )
             menu.addItem(item)
             menu.addItem(.separator())
         }
         if let secureApp = p.secureInputAppName {
-            let item = NSMenuItem(
-                title: "🔒 Secure Input 활성 (\(secureApp)) — 암호 입력 중",
-                action: nil,
-                keyEquivalent: ""
+            let item = makeMenuItem(
+                title: "Secure Input 활성 (\(secureApp)) — 암호 입력 중",
+                symbol: "lock.fill",
+                action: nil
             )
             item.isEnabled = false
             menu.addItem(item)
@@ -110,33 +122,34 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         // 2. Local Status & Quick Toggle
         let localTitle = "로컬 입력기: \(p.localSourceName) (\(p.localLanguage.shortBadge))"
-        let localItem = NSMenuItem(title: localTitle, action: #selector(handleToggleLocal), keyEquivalent: "")
-        localItem.target = self
+        let localItem = makeMenuItem(title: localTitle, symbol: "globe", action: #selector(handleToggleLocal))
         menu.addItem(localItem)
 
         // 3. Active Remote Status
         if p.remoteContext.hasActiveRemoteSession {
             let host = p.remoteContext.resolvedPeer?.hostName ?? p.remoteContext.windowTitle
             let detail: String
+            let sym: String
             if let st = p.remotePeerState, st.daemonReachable {
                 let rtt = st.lastRTTMs.map { String(format: " · %.1fms", $0) } ?? ""
-                detail = "⚡ 원격 활성: \(host) [\(st.currentLanguage.shortBadge)]\(rtt)"
+                detail = "원격 활성: \(host) [\(st.currentLanguage.shortBadge)]\(rtt)"
+                sym = "bolt.horizontal.fill"
             } else {
-                detail = "↗ 원격 폴백: \(host) (TailIME 미연결)"
+                detail = "원격 폴백: \(host) (TailIME 미연결)"
+                sym = "arrow.up.right.circle"
             }
-            let rItem = NSMenuItem(title: detail, action: nil, keyEquivalent: "")
+            let rItem = makeMenuItem(title: detail, symbol: sym, action: nil)
             rItem.isEnabled = false
             menu.addItem(rItem)
         } else {
-            let idle = NSMenuItem(title: "원격 세션: 대기 중", action: nil, keyEquivalent: "")
+            let idle = makeMenuItem(title: "원격 세션: 대기 중", symbol: "desktopcomputer", action: nil)
             idle.isEnabled = false
             menu.addItem(idle)
         }
 
         // 4. Remote Target Selector Submenu
         let targetMenu = NSMenu()
-        let autoItem = NSMenuItem(title: "자동 감지 (포커스 창·소켓 기반)", action: #selector(handleSelectPeer(_:)), keyEquivalent: "")
-        autoItem.target = self
+        let autoItem = makeMenuItem(title: "자동 감지 (포커스 창·소켓 기반)", symbol: "sparkles", action: #selector(handleSelectPeer(_:)))
         autoItem.representedObject = nil
         autoItem.state = (p.pinnedPeerID == nil) ? .on : .off
         targetMenu.addItem(autoItem)
@@ -159,39 +172,52 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             }
         }
         targetMenu.addItem(.separator())
-        let refreshPeers = NSMenuItem(title: "Tailscale 피어 새로고침", action: #selector(handleRefreshTailscale), keyEquivalent: "")
-        refreshPeers.target = self
+        let refreshPeers = makeMenuItem(title: "Tailscale 피어 새로고침", symbol: "arrow.clockwise", action: #selector(handleRefreshTailscale))
         targetMenu.addItem(refreshPeers)
 
-        let targetRoot = NSMenuItem(title: "원격 대상 Mac 선택", action: nil, keyEquivalent: "")
+        let targetRoot = makeMenuItem(title: "원격 대상 Mac 선택", symbol: "macbook.and.iphone", action: nil)
         targetRoot.submenu = targetMenu
         menu.addItem(targetRoot)
 
         // 5. Active Triggers Summary
-        let triggerItem = NSMenuItem(title: "감지된 한영키: \(p.activeTriggersSummary)", action: #selector(handleOpenTriggerSettings), keyEquivalent: "")
-        triggerItem.target = self
+        let triggerItem = makeMenuItem(title: "한영키: \(p.activeTriggersSummary)", symbol: "keyboard", action: #selector(handleOpenTriggerSettings))
         menu.addItem(triggerItem)
 
         menu.addItem(.separator())
 
         // 6. Controls
-        let pauseItem = NSMenuItem(title: p.paused ? "재개하기" : "일시정지", action: #selector(handleTogglePause), keyEquivalent: "")
-        pauseItem.target = self
+        let pauseItem = makeMenuItem(
+            title: p.paused ? "재개하기" : "일시정지",
+            symbol: p.paused ? "play.circle" : "pause.circle",
+            action: #selector(handleTogglePause)
+        )
         menu.addItem(pauseItem)
 
-        let settingsItem = NSMenuItem(title: "설정...", action: #selector(handleOpenGeneralSettings), keyEquivalent: ",")
-        settingsItem.target = self
+        let settingsItem = makeMenuItem(title: "설정...", symbol: "gearshape", action: #selector(handleOpenGeneralSettings), keyEquivalent: ",")
         menu.addItem(settingsItem)
 
-        let diagItem = NSMenuItem(title: "진단 및 실시간 키 테스트...", action: #selector(handleOpenDiagnostics), keyEquivalent: "")
-        diagItem.target = self
+        let diagItem = makeMenuItem(title: "진단 및 실시간 키 테스트...", symbol: "stethoscope", action: #selector(handleOpenDiagnostics))
         menu.addItem(diagItem)
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "TailIME 종료", action: #selector(handleQuit), keyEquivalent: "q")
-        quitItem.target = self
+        let quitItem = makeMenuItem(title: "TailIME 종료", symbol: "power", action: #selector(handleQuit), keyEquivalent: "q")
         menu.addItem(quitItem)
+    }
+
+    private func makeMenuItem(
+        title: String,
+        symbol: String,
+        action: Selector?,
+        keyEquivalent: String = ""
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+        item.target = (action != nil) ? self : nil
+        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) {
+            img.isTemplate = true
+            item.image = img
+        }
+        return item
     }
 
     @objc private func handleToggleLocal() { onToggleLocalLanguage?() }

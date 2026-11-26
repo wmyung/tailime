@@ -116,9 +116,13 @@ public enum SymbolicHotkeysParser {
         CFPreferencesAppSynchronize(hitoolboxDomain)
         let fnUsage = (CFPreferencesCopyAppValue("AppleFnUsageType" as CFString, hitoolboxDomain) as? NSNumber)?.intValue ?? 0
 
-        let capsGlobal = UserDefaults.standard.object(forKey: "TISRomanSwitchState") as? NSNumber
+        CFPreferencesAppSynchronize(kCFPreferencesAnyApplication)
+        let capsGlobalCF = CFPreferencesCopyAppValue("TISRomanSwitchState" as CFString, kCFPreferencesAnyApplication) as? NSNumber
+        let capsGlobalUD = UserDefaults.standard.object(forKey: "TISRomanSwitchState") as? NSNumber
         let capsHIToolbox = CFPreferencesCopyAppValue("TISRomanSwitchState" as CFString, hitoolboxDomain) as? NSNumber
-        let capsEnabled = (capsGlobal?.boolValue ?? false) || (capsHIToolbox?.boolValue ?? false)
+        let capsEnabled = (capsGlobalCF?.boolValue ?? false)
+            || (capsGlobalUD?.boolValue ?? false)
+            || (capsHIToolbox?.boolValue ?? false)
 
         return parse(
             hotkeysDict: dict,

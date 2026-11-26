@@ -160,14 +160,18 @@ final class EventTapController {
 
     /// Injects a clean in-band carrier key (e.g. F16/F17/F20) into `.cghidEventTap` so it enters
     /// the focused remote desktop client in exact FIFO order with the user's typing.
+    /// Never sets `.maskSecondaryFn` so macOS WindowServer never latches Globe/Fn into modifier state!
     func injectInBandCarrier(keyCode: Int64) {
         guard let source = CGEventSource(stateID: .privateState),
               let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(keyCode), keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(keyCode), keyDown: false) else {
             return
         }
+        let physicalFlags = VirtualKeyCode.currentPhysicalModifierFlags()
+        let capsOnly: CGEventFlags = physicalFlags.contains(.maskAlphaShift) ? [.maskAlphaShift] : []
+        down.flags = capsOnly
+        up.flags = physicalFlags
         for ev in [down, up] {
-            ev.flags = [.maskSecondaryFn]
             ev.setIntegerValueField(.keyboardEventAutorepeat, value: 0)
             ev.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
         }
@@ -179,6 +183,8 @@ final class EventTapController {
     /// If `action == .passthrough` and an owned trigger had been swallowed, re-injects `originalSpec`.
     func injectFallbackAction(_ action: FallbackResolvedAction, originalSpec: TriggerSpec? = nil) {
         guard let source = CGEventSource(stateID: .privateState) else { return }
+        let physicalFlags = VirtualKeyCode.currentPhysicalModifierFlags()
+        let capsFlags: CGEventFlags = physicalFlags.contains(.maskAlphaShift) ? [.maskAlphaShift] : []
         switch action {
         case .passthrough:
             if let spec = originalSpec, spec.kind == .ownedKey {
@@ -190,12 +196,13 @@ final class EventTapController {
                   let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(keyCode), keyDown: false) else {
                 return
             }
-            var flags = modifiers.cgEventFlags
+            var downFlags = modifiers.cgEventFlags.union(capsFlags)
             if VirtualKeyCode.functionKeys.contains(keyCode) {
-                flags.insert(.maskSecondaryFn)
+                downFlags.insert(.maskSecondaryFn)
             }
+            down.flags = downFlags
+            up.flags = physicalFlags
             for ev in [down, up] {
-                ev.flags = flags
                 ev.setIntegerValueField(.keyboardEventAutorepeat, value: 0)
                 ev.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
             }
@@ -209,13 +216,13 @@ final class EventTapController {
             down.type = .flagsChanged
             up.type = .flagsChanged
             if keyCode == VirtualKeyCode.rightOption {
-                down.flags = CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | 0x40)
+                down.flags = CGEventFlags(rawValue: CGEventFlags.maskAlternate.rawValue | 0x40).union(capsFlags)
             } else if keyCode == VirtualKeyCode.rightCommand {
-                down.flags = CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x10)
+                down.flags = CGEventFlags(rawValue: CGEventFlags.maskCommand.rawValue | 0x10).union(capsFlags)
             } else if keyCode == VirtualKeyCode.rightControl {
-                down.flags = CGEventFlags(rawValue: CGEventFlags.maskControl.rawValue | 0x2000)
+                down.flags = CGEventFlags(rawValue: CGEventFlags.maskControl.rawValue | 0x2000).union(capsFlags)
             }
-            up.flags = []
+            up.flags = physicalFlags
             for ev in [down, up] {
                 ev.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
             }
@@ -390,12 +397,16 @@ final class EventTapController {
         }
 
         let repeated = (type == .keyDown) && (event.getIntegerValueField(.keyboardEventAutorepeat) != 0)
+        let physDown: Bool? = (type == .flagsChanged && keyCode == VirtualKeyCode.capsLock)
+            ? CGEventSource.keyState(.hidSystemState, key: CGKeyCode(VirtualKeyCode.capsLock))
+            : nil
         let sample = KeyEventSample(
             kind: sampleKind,
             keyCode: keyCode,
             modifiers: mods,
             rawFlags: event.flags.rawValue,
             isAutoRepeat: repeated,
+            isKeyPhysicallyDown: physDown,
             timestamp: now
         )
 
@@ -663,17 +674,19 @@ final class EventTapController {
             return nil
         }
         if type == .flagsChanged {
-            if VirtualKeyCode.rightModifierKeys.contains(keyCode) {
-                let down = !mods.isEmpty
-                if down {
+            if VirtualKeyCode.standaloneModifierTapKeys.contains(keyCode) {
+                let singleModPressed = mods.rawValue.nonzeroBitCount == 1
+                if singleModPressed {
                     recordingPendingMod = (keyCode, now)
-                } else if let pending = recordingPendingMod, pending.keyCode == keyCode, now - pending.downAt < 0.5 {
+                } else if mods.isEmpty, let pending = recordingPendingMod, pending.keyCode == keyCode, now - pending.downAt < 0.5 {
                     recordingPendingMod = nil
                     let spec = TriggerSpec(keyCode: keyCode, modifiers: [], kind: .modifierTap, origin: .userRecorded)
                     updateSnapshot { $0.isRecordingTrigger = false }
                     DispatchQueue.main.async { [weak self] in
                         self?.onRecordedTrigger?(spec)
                     }
+                } else {
+                    recordingPendingMod = nil
                 }
             }
         }

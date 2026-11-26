@@ -496,9 +496,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             case "status":
                 let cur = self.localEngine.currentInputSource()
                 let ctx = self.sessionWatcher.currentContext
+                let tapSnap = self.tapController.currentSnapshot()
+                let conflicts = self.detectConflictingIMEApps()
                 return [
                     "ok": true,
-                    "version": "1.0.0",
+                    "version": "1.0.1",
                     "enabled": self.settingsStore.settings.enabled,
                     "paused": self.paused,
                     "accessibility": AXIsProcessTrusted(),
@@ -510,6 +512,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "boundUDP": self.boundUDPAddresses,
                     "remoteFocused": ctx.hasActiveRemoteSession,
                     "remotePeer": ctx.resolvedPeer?.hostName ?? "",
+                    "remoteBundle": ctx.bundleID,
+                    "remoteResolution": ctx.resolutionSource,
+                    "remoteIsLobby": ctx.isLobbyWindow,
+                    "remoteCandidateIPs": ctx.candidatePeerIPs,
+                    "hasActivePairedController": tapSnap.hasActivePairedController,
+                    "conflictingApps": conflicts,
                     "trustedPeerCount": self.settingsStore.trustedPeers.count,
                 ]
             case "toggle":
@@ -569,22 +577,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                       let lang = InputLanguage(rawValue: langStr) else {
                     return ["ok": false, "error": "ip and lang ('ko'|'en') required"]
                 }
-                guard let rec = self.settingsStore.trustedPeer(matchingIP: targetIP)
-                    ?? self.settingsStore.trustedPeers.first(where: { $0.name.caseInsensitiveCompare(targetIP) == .orderedSame }),
-                      let liveIP = rec.lastKnownIP ?? (TailscaleIPValidator.isTailscaleIP(targetIP) ? targetIP : nil),
-                      let key = self.identity.derivePeerHMACKey(peerPublicKeyBase64: rec.publicKeyBase64) else {
+                guard let sent = self.remoteCoordinator.sendManualRemoteSet(targetQuery: targetIP, targetLang: lang) else {
                     return ["ok": false, "error": "peer not paired"]
                 }
-                let msg = WireMessage(
-                    cmd: .set,
-                    senderDeviceID: self.identity.deviceID,
-                    senderName: self.remoteCoordinator.hostDisplayName,
-                    bootSessionID: self.remoteCoordinator.bootSessionID,
-                    seq: UInt64(Date().timeIntervalSince1970 * 1000),
-                    targetLanguage: lang
-                )
-                self.udpEndpoint.send(message: msg, toIP: liveIP, key: key)
-                return ["ok": true, "peer": rec.name, "ip": liveIP, "target": lang.rawValue]
+                return ["ok": true, "peer": sent.peerName, "ip": sent.ip, "target": lang.rawValue]
             case "quit":
                 DispatchQueue.main.async { NSApp.terminate(nil) }
                 return ["ok": true]
@@ -596,6 +592,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controlServer = server
     }
 
+    // MARK: - Competing IME Switcher Detection
+
+    private func detectConflictingIMEApps() -> [String] {
+        let knownConflicts: [(needle: String, displayName: String)] = [
+            ("gksdud", "gksdud"),
+            ("hangulsync", "HangulSync"),
+            ("input source pro", "Input Source Pro"),
+            ("inputsourcepro", "Input Source Pro"),
+            ("kawa", "Kawa"),
+        ]
+        var found: [String] = []
+        var seen: Set<String> = []
+        let myPID = ProcessInfo.processInfo.processIdentifier
+        for app in NSWorkspace.shared.runningApplications where app.processIdentifier != myPID {
+            let name = (app.localizedName ?? "").lowercased()
+            let bundle = (app.bundleIdentifier ?? "").lowercased()
+            for (needle, display) in knownConflicts {
+                if name.contains(needle) || bundle.contains(needle) {
+                    if seen.insert(display).inserted {
+                        found.append(display)
+                    }
+                }
+            }
+        }
+        return found
+    }
+
     // MARK: - UI Refresh
 
     private func refreshAllUI() {
@@ -604,6 +627,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let remoteCtx = sessionWatcher.currentContext
         let remoteIP = remoteCtx.resolvedPeer?.preferredIP ?? ""
         let remoteState = remoteCoordinator.peerStates[remoteIP]
+        let conflicts = detectConflictingIMEApps()
 
         let triggersSummary = activeTriggers.isEmpty
             ? "없음"
@@ -616,6 +640,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             paused: paused,
             accessibilityGranted: AXIsProcessTrusted(),
             secureInputAppName: secureInputAppName,
+            conflictingApps: conflicts,
             remoteContext: remoteCtx,
             remotePeerState: remoteState,
             tailscalePeers: remoteCoordinator.currentTailscaleSnapshot.peers,
@@ -646,18 +671,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if remoteCtx.hasActiveRemoteSession {
             remoteDesc = "\(remoteCtx.bundleID) → \(remoteCtx.resolvedPeer?.hostName ?? "미확정") (\(remoteCtx.resolutionSource))"
         } else if remoteCtx.isRemoteAppFocused {
-            remoteDesc = "\(remoteCtx.bundleID) (로비 창)"
+            let reason = remoteCtx.isLobbyWindow ? "로비 창" : "미매칭 · \(remoteCtx.resolutionSource)"
+            remoteDesc = "\(remoteCtx.bundleID) (\(reason))"
         } else {
             remoteDesc = "로컬 앱 포커스"
         }
 
         let diag = DiagnosticsSummary(
+            version: "1.0.1",
+            enabled: settings.enabled,
+            paused: paused,
             hidTapActive: hidTapActive,
             sessionTapActive: sessionTapActive,
             accessibilityGranted: AXIsProcessTrusted(),
             postEventAccessGranted: CGPreflightPostEventAccess(),
             textInputSwitcherRunning: localEngine.switcherWaker.isRunning,
             secureInputAppName: secureInputAppName,
+            conflictingApps: conflicts,
             boundUDPAddresses: boundUDPAddresses,
             systemHotkeyDescription: hkDesc,
             karabinerSummary: karDesc,

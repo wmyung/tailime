@@ -23,6 +23,7 @@ public struct KeyEventSample: Equatable, Sendable {
     public let modifiers: NormalizedModifiers
     public let rawFlags: UInt64
     public let isAutoRepeat: Bool
+    public let isKeyPhysicallyDown: Bool?
     public let timestamp: TimeInterval
 
     public init(
@@ -31,6 +32,7 @@ public struct KeyEventSample: Equatable, Sendable {
         modifiers: NormalizedModifiers = [],
         rawFlags: UInt64 = 0,
         isAutoRepeat: Bool = false,
+        isKeyPhysicallyDown: Bool? = nil,
         timestamp: TimeInterval
     ) {
         self.kind = kind
@@ -38,6 +40,7 @@ public struct KeyEventSample: Equatable, Sendable {
         self.modifiers = modifiers
         self.rawFlags = rawFlags
         self.isAutoRepeat = isAutoRepeat
+        self.isKeyPhysicallyDown = isKeyPhysicallyDown
         self.timestamp = timestamp
     }
 }
@@ -149,6 +152,7 @@ public enum TriggerResolver {
 /// Deterministic, allocation-light state machine evaluated inside the EventTap callback.
 public struct TriggerMatcher: Sendable {
     public static let modifierTapMaxDuration: TimeInterval = 0.32
+    public static let capsTapMaxDuration: TimeInterval = 0.40
 
     private var ownedTriggers: [TriggerSpec] = []
     private var modifierTapTriggers: [Int64: TriggerSpec] = [:]
@@ -161,7 +165,7 @@ public struct TriggerMatcher: Sendable {
     /// Tracks whether the user typed any non-Space key while Shift was held (prevents accidental Shift+Space).
     private var typedWithShift: Bool = false
 
-    /// Tracks an in-progress standalone modifier tap (e.g. Right Cmd / Right Opt / Right Ctrl).
+    /// Tracks an in-progress standalone modifier tap (left/right Cmd, Opt, Ctrl, Shift).
     private struct PendingModifierTap: Sendable {
         let keyCode: Int64
         let downAt: TimeInterval
@@ -169,8 +173,16 @@ public struct TriggerMatcher: Sendable {
     }
     private var pendingModTap: PendingModifierTap?
 
-    /// Last observed CapsLock/Fn flag states for edge detection.
-    private var lastCapsBit: Bool = false
+    /// Tracks an in-progress Caps Lock short tap under macOS TISRomanSwitchState.
+    private struct PendingCapsTap: Sendable {
+        let downAt: TimeInterval
+        let alphaShiftAtDown: Bool
+        var cancelled: Bool
+    }
+    private var pendingCapsTap: PendingCapsTap?
+
+    /// Last observed CapsLock/Fn flag states for edge detection (`nil` until first Caps event).
+    private var lastCapsBit: Bool? = nil
     private var lastFnBit: Bool = false
 
     public init(triggers: [TriggerSpec] = []) {
@@ -193,6 +205,7 @@ public struct TriggerMatcher: Sendable {
     public mutating func resetGates() {
         swallowedDown.removeAll()
         pendingModTap = nil
+        pendingCapsTap = nil
         typedWithShift = false
     }
 
@@ -202,16 +215,19 @@ public struct TriggerMatcher: Sendable {
     }
 
     public mutating func process(_ event: KeyEventSample) -> TriggerDecision {
-        // Any mouse press cancels a pending standalone modifier tap (e.g. RightCmd + Click).
+        // Any mouse press cancels pending standalone modifier / Caps Lock taps (e.g. RightCmd + Click).
         if event.kind == .mouseDown {
             pendingModTap?.cancelled = true
+            pendingCapsTap?.cancelled = true
             return .passThrough
         }
 
-        // Track Shift typing state (matches gksdud SpaceComboGate guard).
+        // Track Shift typing state (matches gksdud SpaceComboGate guard; exclude Space & dedicated switch keys).
         if !event.modifiers.contains(.shift) {
             typedWithShift = false
-        } else if event.kind == .keyDown && event.keyCode != VirtualKeyCode.space {
+        } else if event.kind == .keyDown
+            && event.keyCode != VirtualKeyCode.space
+            && !VirtualKeyCode.dedicatedSingleSwitchKeys.contains(event.keyCode) {
             typedWithShift = true
         }
 
@@ -219,8 +235,9 @@ public struct TriggerMatcher: Sendable {
         case .flagsChanged:
             return handleFlagsChanged(event)
         case .keyDown:
-            // Any regular keyDown cancels a pending standalone modifier tap.
+            // Any regular keyDown cancels pending standalone modifier / Caps Lock taps.
             pendingModTap?.cancelled = true
+            pendingCapsTap?.cancelled = true
             return handleKeyDown(event)
         case .keyUp:
             return handleKeyUp(event)
@@ -238,6 +255,7 @@ public struct TriggerMatcher: Sendable {
             return .passThrough
         }
 
+        // First pass: exact (keyCode, modifiers) match
         for spec in ownedTriggers {
             guard spec.keyCode == event.keyCode else { continue }
             guard spec.modifiers == event.modifiers else { continue }
@@ -249,6 +267,16 @@ public struct TriggerMatcher: Sendable {
 
             swallowedDown.insert(event.keyCode)
             return .fireOwned(spec)
+        }
+
+        // Second pass: brief Shift rollover tolerance for dedicated unmodified single-key switch triggers
+        // (F13..F20, Lang1, Lang2) ONLY when the user was actively typing uppercase/shifted characters (`typedWithShift`),
+        // so intentional fresh `Shift+F18` app shortcuts remain untouched!
+        if typedWithShift && event.modifiers == .shift && VirtualKeyCode.dedicatedSingleSwitchKeys.contains(event.keyCode) {
+            if let spec = ownedTriggers.first(where: { $0.keyCode == event.keyCode && $0.modifiers.isEmpty }) {
+                swallowedDown.insert(event.keyCode)
+                return .fireOwned(spec)
+            }
         }
         return .passThrough
     }
@@ -264,13 +292,49 @@ public struct TriggerMatcher: Sendable {
         // 1. Observed system keys (Caps Lock / Fn-Globe): NEVER swallow flagsChanged!
         if let obsSpec = observedTriggers[event.keyCode] {
             if event.keyCode == VirtualKeyCode.capsLock {
+                // `capsLock` is only in `observedTriggers` when macOS TISRomanSwitchState is enabled.
+                // Under TISRomanSwitchState, a short tap leaves maskAlphaShift unchanged, while a long press
+                // flips maskAlphaShift to toggle uppercase Caps Lock. Track real physical down->up transitions
+                // so rapid double-taps work cleanly, slow taps don't double-fire, and long-presses never switch!
                 let capsNow = (event.rawFlags & CGEventFlags.maskAlphaShift.rawValue) != 0
-                let changed = capsNow != lastCapsBit
-                lastCapsBit = capsNow
-                // Fire on Caps Lock state transition (actual press); never swallow.
-                return changed ? .fireObserved(obsSpec) : .passThrough
+                defer { lastCapsBit = capsNow }
+
+                guard let isDown = event.isKeyPhysicallyDown else {
+                    pendingCapsTap = nil
+                    return .passThrough
+                }
+
+                if isDown {
+                    if var existing = pendingCapsTap {
+                        if capsNow != existing.alphaShiftAtDown || !event.modifiers.isEmpty {
+                            existing.cancelled = true
+                            pendingCapsTap = existing
+                        }
+                    } else {
+                        let toggledOnDown = (lastCapsBit != nil && capsNow != lastCapsBit!)
+                        pendingCapsTap = PendingCapsTap(
+                            downAt: event.timestamp,
+                            alphaShiftAtDown: capsNow,
+                            cancelled: !event.modifiers.isEmpty || toggledOnDown
+                        )
+                    }
+                    return .passThrough
+                } else {
+                    guard let pending = pendingCapsTap else { return .passThrough }
+                    pendingCapsTap = nil
+                    let elapsed = event.timestamp - pending.downAt
+                    if !pending.cancelled
+                        && capsNow == pending.alphaShiftAtDown
+                        && elapsed >= 0
+                        && elapsed <= Self.capsTapMaxDuration {
+                        return .fireObserved(obsSpec)
+                    }
+                    return .passThrough
+                }
             }
             if event.keyCode == VirtualKeyCode.functionKey || event.keyCode == VirtualKeyCode.globe {
+                pendingCapsTap?.cancelled = true
+                pendingModTap?.cancelled = true
                 let fnNow = (event.rawFlags & CGEventFlags.maskSecondaryFn.rawValue) != 0
                 let pressed = fnNow && !lastFnBit
                 lastFnBit = fnNow
@@ -278,7 +342,12 @@ public struct TriggerMatcher: Sendable {
             }
         }
 
-        // 2. Standalone modifier tap triggers (Right Cmd / Right Opt / Right Ctrl)
+        // Pressing any OTHER modifier cancels a pending Caps Lock tap (e.g. Caps+Cmd chord).
+        if pendingCapsTap != nil {
+            pendingCapsTap?.cancelled = true
+        }
+
+        // 2. Standalone modifier tap triggers (all left/right Cmd, Opt, Ctrl, Shift)
         if let tapSpec = modifierTapTriggers[event.keyCode] {
             let isKeyDown = isModifierDown(keyCode: event.keyCode, rawFlags: event.rawFlags, modifiers: event.modifiers)
             if isKeyDown {
@@ -322,19 +391,35 @@ public struct TriggerMatcher: Sendable {
 
     private func isModifierDown(keyCode: Int64, rawFlags: UInt64, modifiers: NormalizedModifiers) -> Bool {
         // macOS NX device-specific modifier bitmasks (from IOLLEvent.h):
-        // NX_DEVICERCMDKEYMASK = 0x10, NX_DEVICELCMDKEYMASK = 0x08
-        // NX_DEVICERALTKEYMASK = 0x40, NX_DEVICELALTKEYMASK = 0x20
-        // NX_DEVICERCTLKEYMASK = 0x2000, NX_DEVICELCTLKEYMASK = 0x01
+        // NX_DEVICELCTLKEYMASK   = 0x0001, NX_DEVICERCTLKEYMASK   = 0x2000
+        // NX_DEVICELSHIFTKEYMASK = 0x0002, NX_DEVICERSHIFTKEYMASK = 0x0004
+        // NX_DEVICELCMDKEYMASK   = 0x0008, NX_DEVICERCMDKEYMASK   = 0x0010
+        // NX_DEVICELALTKEYMASK   = 0x0020, NX_DEVICERALTKEYMASK   = 0x0040
         switch keyCode {
         case VirtualKeyCode.rightCommand:
             let deviceBit = (rawFlags & 0x10) != 0
             return modifiers.contains(.command) && (deviceBit || (rawFlags & 0x08) == 0)
+        case VirtualKeyCode.leftCommand:
+            let deviceBit = (rawFlags & 0x08) != 0
+            return modifiers.contains(.command) && (deviceBit || (rawFlags & 0x10) == 0)
         case VirtualKeyCode.rightOption:
             let deviceBit = (rawFlags & 0x40) != 0
             return modifiers.contains(.option) && (deviceBit || (rawFlags & 0x20) == 0)
+        case VirtualKeyCode.leftOption:
+            let deviceBit = (rawFlags & 0x20) != 0
+            return modifiers.contains(.option) && (deviceBit || (rawFlags & 0x40) == 0)
         case VirtualKeyCode.rightControl:
             let deviceBit = (rawFlags & 0x2000) != 0
             return modifiers.contains(.control) && (deviceBit || (rawFlags & 0x01) == 0)
+        case VirtualKeyCode.leftControl:
+            let deviceBit = (rawFlags & 0x01) != 0
+            return modifiers.contains(.control) && (deviceBit || (rawFlags & 0x2000) == 0)
+        case VirtualKeyCode.rightShift:
+            let deviceBit = (rawFlags & 0x04) != 0
+            return modifiers.contains(.shift) && (deviceBit || (rawFlags & 0x02) == 0)
+        case VirtualKeyCode.leftShift:
+            let deviceBit = (rawFlags & 0x02) != 0
+            return modifiers.contains(.shift) && (deviceBit || (rawFlags & 0x04) == 0)
         default:
             return modifiers.contains(expectedModifierFlag(for: keyCode))
         }

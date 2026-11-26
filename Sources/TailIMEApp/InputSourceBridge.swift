@@ -168,6 +168,7 @@ final class LocalSwitchEngine {
     private var lastKoreanSourceID: String?
     private var lastEnglishSourceID: String?
     private var pendingVerificationWork: DispatchWorkItem?
+    private var pendingSwitchCompletion: (gen: UInt64, targetLang: InputLanguage?, completion: ((InputSourceInfo?) -> Void)?)?
     private var switchGeneration: UInt64 = 0
 
     var onInputSourceChanged: ((InputSourceInfo) -> Void)?
@@ -201,6 +202,14 @@ final class LocalSwitchEngine {
     private func handleSystemInputSourceNotification() {
         guard let info = currentInputSource() else { return }
         rememberSource(info)
+        if let pending = pendingSwitchCompletion,
+           pending.gen == switchGeneration,
+           (pending.targetLang == nil || info.language == pending.targetLang) {
+            pendingSwitchCompletion = nil
+            pendingVerificationWork?.cancel()
+            pendingVerificationWork = nil
+            pending.completion?(info)
+        }
         onInputSourceChanged?(info)
     }
 
@@ -244,6 +253,7 @@ final class LocalSwitchEngine {
         let gen = switchGeneration
         pendingVerificationWork?.cancel()
         pendingVerificationWork = nil
+        pendingSwitchCompletion = nil
 
         guard let hotkey = hotkeysSnapshot.preferredPulseHotkey else {
             completion?(currentInputSource())
@@ -252,10 +262,13 @@ final class LocalSwitchEngine {
         if !switcherWaker.isRunning {
             switcherWaker.checkAndWarmAsync(force: false)
         }
+        pendingSwitchCompletion = (gen, nil, completion)
         _ = postSyntheticHotkeyPulse(hotkey)
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.switchGeneration == gen else { return }
-            completion?(self.currentInputSource())
+            let done = self.pendingSwitchCompletion?.completion
+            self.pendingSwitchCompletion = nil
+            done?(self.currentInputSource())
         }
         pendingVerificationWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.035, execute: work)
@@ -274,6 +287,7 @@ final class LocalSwitchEngine {
         let gen = switchGeneration
         pendingVerificationWork?.cancel()
         pendingVerificationWork = nil
+        pendingSwitchCompletion = nil
 
         let current = currentInputSource()
         if let current, current.language == targetLang {
@@ -296,32 +310,42 @@ final class LocalSwitchEngine {
             if !switcherWaker.isRunning {
                 switcherWaker.checkAndWarmAsync(force: false)
             }
+            pendingSwitchCompletion = (gen, targetLang, completion)
             if postSyntheticHotkeyPulse(hotkey) {
-                // Verify arrival within 55ms; if macOS dropped the pulse (e.g., busy app or disabled symbolic hotkey),
-                // fall back seamlessly to TSMDirectBridge / TISSelectInputSource!
+                // Fast path completes immediately inside handleSystemInputSourceNotification (~2-5ms).
+                // Fallback verification runs after 55ms only if macOS dropped the pulse.
                 let verify = DispatchWorkItem { [weak self] in
                     guard let self, self.switchGeneration == gen else { return }
+                    let done = self.pendingSwitchCompletion?.completion
+                    self.pendingSwitchCompletion = nil
                     let nowInfo = self.currentInputSource()
                     if nowInfo?.language == targetLang {
-                        completion?(nowInfo)
+                        done?(nowInfo)
                         return
                     }
                     self.selectDirectly(targetTIS)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.015) { [weak self] in
-                        completion?(self?.currentInputSource())
+                        done?(self?.currentInputSource())
                     }
                 }
                 pendingVerificationWork = verify
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.055, execute: verify)
                 return
             }
+            pendingSwitchCompletion = nil
         }
 
         // Direct path (used when remote viewer is focused for Auto-ABC, >2 input sources, or hotkey 60/61 disabled)
+        pendingSwitchCompletion = (gen, targetLang, completion)
         selectDirectly(targetTIS)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
-            completion?(self?.currentInputSource())
+        let directFallback = DispatchWorkItem { [weak self] in
+            guard let self, self.switchGeneration == gen else { return }
+            let done = self.pendingSwitchCompletion?.completion
+            self.pendingSwitchCompletion = nil
+            done?(self.currentInputSource())
         }
+        pendingVerificationWork = directFallback
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: directFallback)
     }
 
     /// Switches directly to a specific input source ID (used when restoring a saved local input source).
@@ -329,6 +353,7 @@ final class LocalSwitchEngine {
         switchGeneration &+= 1
         pendingVerificationWork?.cancel()
         pendingVerificationWork = nil
+        pendingSwitchCompletion = nil
 
         if currentInputSource()?.id == sourceID { return }
         let list = selectableKeyboardTISSources()
@@ -367,21 +392,25 @@ final class LocalSwitchEngine {
             return false
         }
 
-        // Preserve hardware Caps Lock state while enforcing exact hotkey modifier flags
-        let capsOn = CGEventSource.flagsState(.combinedSessionState).contains(.maskAlphaShift)
-        var flags = hotkey.syntheticPulseFlags
-        if capsOn {
-            flags.insert(.maskAlphaShift)
+        // Preserve hardware Caps Lock state while enforcing exact hotkey modifier flags on keyDown ONLY.
+        // CRITICAL: On keyUp, restore ONLY live physically held modifiers from `.hidSystemState` (NEVER `.maskSecondaryFn`
+        // or synthetic unheld modifiers), and post to `.cgSessionEventTap` so macOS WindowServer never latches Globe/Fn
+        // or Ctrl/Cmd/Opt/Shift while still preserving real physical holds (e.g. holding Ctrl across Ctrl+Space)!
+        let physicalFlags = VirtualKeyCode.currentPhysicalModifierFlags()
+        var downFlags = hotkey.syntheticPulseFlags
+        if physicalFlags.contains(.maskAlphaShift) {
+            downFlags.insert(.maskAlphaShift)
         }
 
+        down.flags = downFlags
+        up.flags = physicalFlags
         for ev in [down, up] {
-            ev.flags = flags
             ev.setIntegerValueField(.keyboardEventAutorepeat, value: 0)
             ev.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
         }
 
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        down.post(tap: .cgSessionEventTap)
+        up.post(tap: .cgSessionEventTap)
         return true
     }
 

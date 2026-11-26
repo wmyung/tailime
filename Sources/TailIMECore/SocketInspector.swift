@@ -40,6 +40,33 @@ public enum SocketInspector {
     public static let tcpStateListen: Int32 = 1
     public static let tcpStateEstablished: Int32 = 4
 
+    /// Normalizes IPv4-mapped (`::ffff:a.b.c.d`) and non-loopback IPv4-compatible (`::a.b.c.d`)
+    /// dual-stack IPv6 representations returned by macOS libproc sockets into canonical IPv4 strings.
+    public static func normalizeIP(_ ip: String) -> String {
+        let trimmed = ip.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+
+        let candidateV4: String?
+        if lower.hasPrefix("::ffff:") {
+            candidateV4 = String(trimmed.dropFirst(7))
+        } else if lower.hasPrefix("::") && lower.contains(".") {
+            candidateV4 = String(trimmed.dropFirst(2))
+        } else {
+            candidateV4 = nil
+        }
+
+        if let v4 = candidateV4 {
+            var addr = in_addr()
+            if inet_pton(AF_INET, v4, &addr) == 1 {
+                let hostOrder = UInt32(bigEndian: addr.s_addr)
+                if lower.hasPrefix("::ffff:") || (hostOrder != 0 && hostOrder != 1) {
+                    return v4
+                }
+            }
+        }
+        return trimmed
+    }
+
     /// Filters raw sockets down to outbound client connections reaching Tailscale peer IPs (v4 & v6).
     /// Excludes listening sockets, non-established TCP, unconnected UDP, local host daemons (`--server`/`--cm`),
     /// and connections targeting `selfIPs`.
@@ -47,6 +74,7 @@ public enum SocketInspector {
         sockets: [ActiveSocketEntry],
         selfIPs: Set<String>
     ) -> [String] {
+        let normalizedSelf = Set(selfIPs.map { normalizeIP($0).lowercased() })
         var result: [String] = []
         var seen: Set<String> = []
 
@@ -61,16 +89,16 @@ public enum SocketInspector {
                 guard sock.remotePort != 0 else { continue }
             }
 
-            let remote = sock.remoteIP
+            let remote = normalizeIP(sock.remoteIP)
             guard TailscaleIPValidator.isTailscaleIP(remote) else { continue }
-            guard !selfIPs.contains(remote) else { continue }
+            guard !normalizedSelf.contains(remote.lowercased()) else { continue }
 
             // Extra defense: RustDesk server listens on localPort 21118 and accepts inbound sessions there.
             if sock.localPort == 21118 && sock.remotePort != 21118 {
                 continue
             }
 
-            if seen.insert(remote).inserted {
+            if seen.insert(remote.lowercased()).inserted {
                 result.append(remote)
             }
         }

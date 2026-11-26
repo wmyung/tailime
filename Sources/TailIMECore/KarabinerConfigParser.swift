@@ -23,15 +23,18 @@ public enum KarabinerConfigParser {
     public static let defaultConfigDirectory = NSString(string: "~/.config/karabiner").expandingTildeInPath
     public static let defaultConfigPath = NSString(string: "~/.config/karabiner/karabiner.json").expandingTildeInPath
 
-    /// Source keys users commonly remap into Korean/English switch triggers in Karabiner.
+    /// Source keys users commonly remap into Korean/English switch triggers in Karabiner
+    /// (covers all left/right control, option, command, shift, caps lock, fn, hangul, and backquote remaps).
     private static let switchSourceNames: Set<String> = [
-        "right_command", "right_gui",
-        "right_option", "right_alt",
-        "right_control",
+        "right_command", "right_gui", "left_command", "left_gui",
+        "right_option", "right_alt", "left_option", "left_alt",
+        "right_control", "left_control",
+        "right_shift", "left_shift",
         "caps_lock",
         "lang1", "japanese_kana",
         "lang2", "japanese_eisuu",
         "fn", "keyboard_fn",
+        "grave_accent_and_tilde",
     ]
 
     /// Target key names that strongly indicate a Korean/English switch binding.

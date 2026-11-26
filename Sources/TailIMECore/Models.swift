@@ -130,15 +130,15 @@ public struct CarrierPair: Codable, Equatable, Sendable {
 }
 
 public enum RemoteTransportMode: String, Codable, CaseIterable, Sendable {
-    case autoHybrid     // Auto-probe in-band carrier; if supported use carrier + UDP safety net, else UDP direct
-    case udpDirectOnly  // Always send absolute set(ko/en) directly over Tailscale UDP
+    case udpDirectOnly  // Always send absolute set(ko/en) directly over Tailscale UDP (recommended, safest for RustDesk)
+    case autoHybrid     // Direct/RustDesk -> UDP; relayed Screen Sharing/VNC -> auto-probe in-band carrier + UDP safety net
     case inBandOnly     // Only inject in-band carrier keys (requires remote TailIME session tap)
 
     public var displayName: String {
         switch self {
-        case .autoHybrid: return "자동 하이브리드 (In-Band + Tailscale UDP)"
-        case .udpDirectOnly: return "Tailscale UDP 직접 전송"
-        case .inBandOnly: return "In-Band 키스트림 전용"
+        case .udpDirectOnly: return "Tailscale UDP 직접 전송 (권장 · RustDesk 안전)"
+        case .autoHybrid: return "자동 하이브리드 (Direct/RustDesk는 UDP · 릴레이 화면공유는 In-Band)"
+        case .inBandOnly: return "In-Band 키스트림 전용 (고급)"
         }
     }
 }
@@ -330,7 +330,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     // Remote Tailscale options
     public var remoteSyncEnabled: Bool = true
     public var udpPort: UInt16 = 39418
-    public var transportMode: RemoteTransportMode = .autoHybrid
+    public var transportMode: RemoteTransportMode = .udpDirectOnly
     public var autoEnglishOnRemoteFocus: Bool = true
     public var restoreLocalSourceOnRemoteBlur: Bool = false
     public var showRemoteHUD: Bool = true

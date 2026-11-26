@@ -38,6 +38,44 @@ bool tailime_mach_service_exists(const char *service_name) {
     return true;
 }
 
+static bool format_socket_ip(
+    int family,
+    uint8_t vflag,
+    const struct in_addr *addr4,
+    const struct in6_addr *addr6,
+    char *out_buf,
+    size_t out_size,
+    bool *out_is_v4
+) {
+    if (!out_buf || out_size == 0) return false;
+    out_buf[0] = '\0';
+
+    bool vflag_v4_only = ((vflag & INI_IPV4) != 0) && ((vflag & INI_IPV6) == 0);
+    if (family == AF_INET || vflag_v4_only) {
+        if (out_is_v4) *out_is_v4 = true;
+        return inet_ntop(AF_INET, addr4, out_buf, (socklen_t)out_size) != NULL;
+    }
+
+    if (addr6 != NULL) {
+        // Unwrap IPv4-mapped (::ffff:a.b.c.d) and non-loopback/non-zero IPv4-compatible (::a.b.c.d) dual-stack addresses.
+        bool is_v4_mapped = IN6_IS_ADDR_V4MAPPED(addr6);
+        bool is_v4_compat = IN6_IS_ADDR_V4COMPAT(addr6);
+        if (is_v4_mapped || is_v4_compat) {
+            struct in_addr v4;
+            memcpy(&v4, &addr6->s6_addr[12], sizeof(v4));
+            uint32_t host_v4 = ntohl(v4.s_addr);
+            if (is_v4_mapped || (host_v4 != 0 && host_v4 != 1)) {
+                if (out_is_v4) *out_is_v4 = true;
+                return inet_ntop(AF_INET, &v4, out_buf, (socklen_t)out_size) != NULL;
+            }
+        }
+        if (out_is_v4) *out_is_v4 = false;
+        return inet_ntop(AF_INET6, addr6, out_buf, (socklen_t)out_size) != NULL;
+    }
+
+    return false;
+}
+
 int32_t tailime_list_pid_sockets(pid_t pid, TailIMESocketInfo *out_list, int32_t max_count) {
     if (pid <= 0 || !out_list || max_count <= 0) return 0;
 
@@ -85,12 +123,28 @@ int32_t tailime_list_pid_sockets(pid_t pid, TailIMESocketInfo *out_list, int32_t
         entry.local_port = ntohs((uint16_t)insi->insi_lport);
         entry.remote_port = ntohs((uint16_t)insi->insi_fport);
 
-        if (family == AF_INET) {
-            inet_ntop(AF_INET, &insi->insi_laddr.ina_46.i46a_addr4, entry.local_ip, sizeof(entry.local_ip));
-            inet_ntop(AF_INET, &insi->insi_faddr.ina_46.i46a_addr4, entry.remote_ip, sizeof(entry.remote_ip));
-        } else {
-            inet_ntop(AF_INET6, &insi->insi_laddr.ina_6, entry.local_ip, sizeof(entry.local_ip));
-            inet_ntop(AF_INET6, &insi->insi_faddr.ina_6, entry.remote_ip, sizeof(entry.remote_ip));
+        bool local_v4 = false;
+        bool remote_v4 = false;
+        (void)format_socket_ip(
+            family,
+            insi->insi_vflag,
+            &insi->insi_laddr.ina_46.i46a_addr4,
+            &insi->insi_laddr.ina_6,
+            entry.local_ip,
+            sizeof(entry.local_ip),
+            &local_v4
+        );
+        (void)format_socket_ip(
+            family,
+            insi->insi_vflag,
+            &insi->insi_faddr.ina_46.i46a_addr4,
+            &insi->insi_faddr.ina_6,
+            entry.remote_ip,
+            sizeof(entry.remote_ip),
+            &remote_v4
+        );
+        if (local_v4 && remote_v4) {
+            entry.family = AF_INET;
         }
 
         if (entry.remote_ip[0] == '\0') continue;

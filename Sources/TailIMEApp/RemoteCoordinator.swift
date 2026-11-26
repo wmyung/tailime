@@ -152,8 +152,12 @@ final class RemoteCoordinator {
             if let peer = ctx.resolvedPeer, let ip = peer.preferredIP,
                trustedRecord(forPeer: peer) != nil {
                 let sessionKey = "\(ctx.bundleID)|\(ip)"
+                let isRustDesk = ctx.bundleID.lowercased().contains("rustdesk")
+                // Prefer pure Direct UDP + adaptive HoldGate on Direct Tailscale paths and ALWAYS on RustDesk
+                // (RustDesk's rdev/enigo maps extended F16/F17/F20 inconsistently on macOS).
+                // On DERP-relayed non-RustDesk sessions (e.g. Apple Screen Sharing) or explicit inBandOnly, allow in-band carriers.
                 let usesInBand = (settings.transportMode == .inBandOnly)
-                    || (settings.transportMode == .autoHybrid && carrierSupportBySessionKey[sessionKey] == true)
+                    || (settings.transportMode == .autoHybrid && !isRustDesk && !peer.isDirectPath && carrierSupportBySessionKey[sessionKey] == true)
                 if usesInBand {
                     let currentRemoteLang = peerStates[ip]?.currentLanguage
                         ?? lastKnownRemoteLanguageByIP[ip]
@@ -279,15 +283,31 @@ final class RemoteCoordinator {
             return
         }
 
-        if context.resolvedPeer == nil && context.isAmbiguousMultiSession {
-            if holdGen != 0 {
-                tapController.flushHoldGateAsync(reason: .completed, expectedGeneration: holdGen)
+        var resolvedPeer = context.resolvedPeer
+        if resolvedPeer == nil && context.isAmbiguousMultiSession {
+            // If multiple sessions are open, check whether only ONE candidate is a paired TailIME Mac.
+            let pairedCandidates = context.candidatePeerIPs.compactMap { ip -> TailscalePeer? in
+                guard let candidate = tailscaleSnapshot.peer(matchingIP: ip),
+                      trustedRecord(forPeer: candidate) != nil else { return nil }
+                return candidate
             }
-            probeAndBindAmbiguousSession(context: context)
-            return
+            if pairedCandidates.count == 1 {
+                resolvedPeer = pairedCandidates[0]
+            } else {
+                if holdGen != 0 {
+                    tapController.flushHoldGateAsync(reason: .completed, expectedGeneration: holdGen)
+                }
+                let isRustDesk = context.bundleID.lowercased().contains("rustdesk")
+                if settings.transportMode != .udpDirectOnly && !isRustDesk {
+                    probeAndBindAmbiguousSession(context: context)
+                } else if settings.showRemoteHUD {
+                    onRemoteSwitchedHUD?("원격 대상 선택 필요 (메뉴바에서 고정)", nil, nil, true)
+                }
+                return
+            }
         }
 
-        guard let peer = context.resolvedPeer, let ip = peer.preferredIP else {
+        guard let peer = resolvedPeer, let ip = peer.preferredIP else {
             if holdGen != 0 {
                 tapController.flushHoldGateAsync(reason: .completed, expectedGeneration: holdGen)
             }
@@ -349,11 +369,12 @@ final class RemoteCoordinator {
             )
 
         case .autoHybrid:
-            if carrierKnown == true || alreadyInjectedCarrierKeyCode != 0 {
+            let isRustDesk = context.bundleID.lowercased().contains("rustdesk")
+            if !isRustDesk && !peer.isDirectPath && (carrierKnown == true || alreadyInjectedCarrierKeyCode != 0) {
                 if holdGen != 0 {
                     tapController.flushHoldGateAsync(reason: .completed, expectedGeneration: holdGen)
                 }
-                let deadlineMs = peer.isDirectPath ? 45 : 130
+                let deadlineMs = 130
                 if alreadyInjectedCarrierKeyCode == 0 {
                     tapController.injectInBandCarrier(keyCode: carrierPair.keyCode(for: targetLang))
                 }
@@ -374,7 +395,7 @@ final class RemoteCoordinator {
                     key: hmacKey,
                     holdGen: holdGen
                 )
-                if carrierKnown == nil {
+                if !isRustDesk && !peer.isDirectPath && carrierKnown == nil {
                     probeCarrierCapability(
                         bundleID: context.bundleID,
                         targetDeviceID: trusted.deviceID,
@@ -435,7 +456,7 @@ final class RemoteCoordinator {
             bootSessionID: bootSessionID,
             seq: seq,
             targetLanguage: targetLang,
-            version: "1.0.0"
+            version: "1.0.1"
         )
         udpEndpoint.send(message: msg, toIP: ip, key: key, nonce: nonce)
 
@@ -485,7 +506,7 @@ final class RemoteCoordinator {
             seq: seq,
             targetLanguage: targetLang,
             carrierDeadlineMs: deadlineMs,
-            version: "1.0.0"
+            version: "1.0.1"
         )
         udpEndpoint.send(message: msg, toIP: ip, key: key, nonce: nonce)
 
@@ -503,6 +524,46 @@ final class RemoteCoordinator {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.pendingRequests.removeValue(forKey: seq)
         }
+    }
+
+    /// Sends a manual deterministic `.set` (e.g. from `tailime-ctl remote-set`) using the coordinator's
+    /// monotonic `nextSeq()` counter so CLI tests NEVER poison the peer's sliding-window replay guard!
+    func sendManualRemoteSet(
+        targetQuery: String,
+        targetLang: InputLanguage
+    ) -> (peerName: String, ip: String)? {
+        let trusted: TrustedPeerRecord?
+        if let direct = settingsStore.trustedPeer(matchingIP: targetQuery) {
+            trusted = direct
+        } else if let tsPeer = tailscaleSnapshot.peer(matchingIP: targetQuery) {
+            trusted = trustedRecord(forPeer: tsPeer)
+        } else {
+            trusted = settingsStore.trustedPeers.first {
+                $0.name.caseInsensitiveCompare(targetQuery) == .orderedSame
+            }
+        }
+        guard let trusted,
+              let liveIP = resolveLiveIP(for: trusted) ?? (TailscaleIPValidator.isTailscaleIP(targetQuery) ? targetQuery : nil),
+              let hmacKey = identity.derivePeerHMACKey(peerPublicKeyBase64: trusted.publicKeyBase64) else {
+            return nil
+        }
+
+        lastKnownRemoteLanguageByIP[liveIP] = targetLang
+        if var st = peerStates[liveIP] {
+            st.currentLanguage = targetLang
+            peerStates[liveIP] = st
+        }
+        syncTapRemoteHintSnapshot()
+
+        sendDirectSetUDP(
+            targetLang: targetLang,
+            targetDeviceID: trusted.deviceID,
+            toIP: liveIP,
+            hostName: trusted.name,
+            key: hmacKey,
+            holdGen: 0
+        )
+        return (trusted.name, liveIP)
     }
 
     func requestStatus(fromPeerIP ip: String, hostName: String) {
@@ -552,7 +613,7 @@ final class RemoteCoordinator {
             senderName: hostDisplayName,
             bootSessionID: bootSessionID,
             seq: seq,
-            version: "1.0.0"
+            version: "1.0.1"
         )
         udpEndpoint.send(message: msg, toIP: ip, key: key, nonce: nonce)
 
@@ -688,7 +749,7 @@ final class RemoteCoordinator {
             seq: nextSeq(),
             publicKeyBase64: identity.publicKeyBase64,
             pairReply: isReply,
-            version: "1.0.0"
+            version: "1.0.1"
         )
         udpEndpoint.send(message: hello, toIP: ip, key: nil)
     }
@@ -789,7 +850,7 @@ final class RemoteCoordinator {
                 currentLanguage: cur?.language ?? .english,
                 sourceID: cur?.id,
                 ok: true,
-                version: "1.0.0"
+                version: "1.0.1"
             )
             udpEndpoint.send(message: pong, toIP: srcIP, port: srcPort, key: peerKey, nonce: incoming.packet.nonce)
 
